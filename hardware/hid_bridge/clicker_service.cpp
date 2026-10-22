@@ -610,10 +610,9 @@ String clicker_api(const String &path, const String &method, const String &body,
     cJSON_AddNumberToObject(o.get(), "loops", s.loops);
     cJSON_AddNumberToObject(o.get(), "point", s.point);
     cJSON_AddNumberToObject(o.get(), "active", s.active);
-    double seconds =
-        s.startedUs ? (esp_timer_get_time() - s.startedUs) / 1e6 : 0;
+    double seconds = (s.lastClickUs - s.firstClickUs) / 1e6;
     cJSON_AddNumberToObject(o.get(), "usb_cps",
-                            seconds > 0 ? s.clicks / seconds : 0);
+                            seconds > 0 ? (s.clicks - 1) / seconds : 0);
     cJSON_AddNumberToObject(o.get(), "requested_cps", clicker_requested_cps());
     cJSON_AddNumberToObject(o.get(), "heap", ESP.getFreeHeap());
     cJSON_AddNumberToObject(o.get(), "psram", ESP.getFreePsram());

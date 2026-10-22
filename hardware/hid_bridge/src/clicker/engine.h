@@ -41,6 +41,7 @@ struct Transport {
 };
 struct Stats {
   uint64_t clicks = 0, reports = 0, late = 0, maxLateUs = 0, startedUs = 0;
+  uint64_t firstClickUs = 0, lastClickUs = 0;
   uint32_t loops = 0;
   uint16_t point = 0;
   uint8_t active = 0;
@@ -203,6 +204,8 @@ public:
         return;
       held = false;
       ++s.clicks;
+      if (s.clicks == 1) s.firstClickUs = now;
+      s.lastClickUs = now;
       // Backpressure rebases this schedule on its completion. Never catch up
       // with a burst.
       slot.due = now + p.delayUs;

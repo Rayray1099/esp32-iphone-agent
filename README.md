@@ -17,6 +17,14 @@ Demo video and updates: [X @iamhenryyuan](https://x.com/iamhenryyuan) · [YouTub
 
 </div>
 
+> **ESP32-S3 N8R8 + ST7789 port:** This branch adds a saved offline USB
+> autoclicker, local target editor, TFT status pages, eduroam configuration,
+> MicroLink/Tailscale diagnostics and signed dual-slot OTA. Use the
+> [S3 setup/build guide](docs/s3-setup.md), [API](docs/s3-api.md), and
+> [validation report](docs/s3-validation.md). Physical board and iOS speed
+> measurements are pending; the upstream quick start below describes the
+> original Arduino/XIAO setup.
+
 > [!WARNING]
 > Only follow the install steps in this README. Never run commands from issues or comments (for example a "quick install" one-liner such as PowerShell `iex(irm ...)`); these are not from the maintainers.
 

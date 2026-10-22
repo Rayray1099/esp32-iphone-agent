@@ -111,9 +111,8 @@ static void renderTask(void *) {
     d.heap = ESP.getFreeHeap();
     d.psram = ESP.getFreePsram();
     d.uptime = millis() / 1000;
-    double seconds =
-        s.startedUs ? (esp_timer_get_time() - s.startedUs) / 1e6 : 0;
-    d.cps = seconds > 0 ? s.clicks / seconds : 0;
+    double seconds = (s.lastClickUs - s.firstClickUs) / 1e6;
+    d.cps = seconds > 0 ? (s.clicks - 1) / seconds : 0;
     int page = s.running ? 0 : (millis() / 7000) % 4;
     if (update != "idle")
       page = 3;

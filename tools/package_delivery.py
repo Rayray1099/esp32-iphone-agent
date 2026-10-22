@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,10 @@ def main():
                     '--version', args.version, '--output', str(package)], check=True)
     key = serialization.load_pem_private_key(args.private.read_bytes(), password=None)
     public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    firmware_public = bytes(int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]{2})',
+        (ROOT / 'hardware/hid_bridge/ota_public_key.h').read_text()))
+    if firmware_public != public:
+        raise SystemExit('Signing key does not match the firmware public key')
     verify(package.read_bytes(), public)
     (dest / 'ota-public-key.bin').write_bytes(public)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()

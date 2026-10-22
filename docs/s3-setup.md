@@ -2,14 +2,15 @@
 
 This branch extends Henry Yuan's ESP32 iPhone Agent. Saved USB sequences run
 without the app, internet, Wi-Fi or Bluetooth. Upstream AI, BLE and AirPlay
-sources remain included. Hardware validation is pending; read
-[the validation report](s3-validation.md) before flashing.
+sources remain included. Bluetooth output is also available and keeps Bluetooth
+on in offline mode. Partial physical validation is documented in
+[the validation report](s3-validation.md).
 
 ## Hardware profile
 
 | Signal | GPIO / configuration |
 | --- | --- |
-| Chip / memory | ESP32-S3, 8 MB flash, 8 MB octal PSRAM |
+| Chip / memory | ESP32-S3, fixed 8 MB layout, 8 MB octal PSRAM |
 | Display | ST7789, 320 x 240 landscape |
 | MOSI / SCK / CS / DC / RESET | 5 / 2 / 15 / 6 / 7 |
 | Backlight | 16, active low |
@@ -18,7 +19,8 @@ sources remain included. Hardware validation is pending; read
 
 The pin map comes from the supplied board CSV. A CH340 connector cannot act as
 the phone's USB mouse. Verify which connector exposes native USB when the board
-arrives. Panel colors, rotation and offsets still need physical verification.
+arrives. The user confirmed the status pages display correctly. The connected
+board reports 16 MB physical flash; the fixed partition layout still uses 8 MB.
 
 ## Reproducible Windows build
 
@@ -44,7 +46,8 @@ After checking the board and correct serial port:
 Initial USB flashing installs bootloader, fixed partition table, OTA data and
 application. Routine OTA changes the inactive app slot. Decide on backup and
 recovery for any firmware already on the board before initial flashing. This
-work has not erased or flashed a physical board.
+board was backed up (all 16 MB), erased and flashed on 2026-10-22. Recovery
+files stay in the private local output folder and are excluded from source delivery.
 
 ## Setup and offline execution
 
@@ -62,7 +65,8 @@ work has not erased or flashed a physical board.
 5. Enter up to 16 saved slots in Concurrent profiles. Each move/press/release
    completes before another target owns the single pointer.
 6. Start, or choose Switch to offline. This remembers the group, restarts with
-   both radios off, and stays stopped until BOOT starts the selection.
+   Wi-Fi off, and stays stopped until BOOT starts the selection. USB mode also
+   disables Bluetooth; Bluetooth mouse mode retains its radio for wireless clicks.
 
 | BOOT action | Result |
 | --- | --- |
@@ -79,7 +83,9 @@ and pointer settings unchanged.
 
 Timings accept integer microseconds from 1 to 3,600,000,000. **1 microsecond
 settings do not produce a one-million-CPS mouse.** Full-speed USB and iOS limit
-actual taps. 150 CPS is a hardware target, not a measured result. Displayed USB
+actual taps. 150 CPS is a USB hardware target, not a measured result. Bluetooth requested
+50 CPS produced 43.88 BLE submissions/s in the latest offline 300-click test;
+the game accepted fewer taps. Connected Wi-Fi can reduce throughput. Displayed USB
 CPS uses completed clicks after initial homing. Distant targets are slower.
 
 ## eduroam
@@ -125,7 +131,7 @@ ID, version, image size and SHA256. Firmware contains only the public key.
 Keep the private signing key outside the repository.
 
 ~~~powershell
-python tools/ota.py pack --private E:/ESP32-signing/s3-clicker-ed25519.pem --image hardware/idf/build/s3_clicker.bin --version 0.2.0 --output output/delivery/s3-clicker-0.2.0.ota
+python tools/ota.py pack --private E:/ESP32-signing/s3-clicker-ed25519.pem --image hardware/idf/build/s3_clicker.bin --version 0.3.0 --output output/delivery/s3-clicker-0.3.0.ota
 ~~~
 
 Upload the .ota file in Remote & updates. Input is released before flash writes.
@@ -141,10 +147,20 @@ Changing the trusted signing key requires a matching firmware/trust migration.
 On macOS install XcodeGen, run xcodegen generate inside ios/, then open the
 project. Copy Config/Local.xcconfig.example to Local.xcconfig and set your Apple
 development team and bundle ID. Build the IPhoneAgent scheme for your device.
-The Clicker tab offers screenshot/frozen-mirror targets, JSON import/export,
+The Traditional Chinese PULSE 連點器 tab opens the live CPS dashboard by default
+and offers screenshot/frozen-mirror targets, JSON import/export,
 BLE chunk upload/download, calibration and saved run controls. The hotspot page
 has the full network and remote/OTA forms; native network configuration currently
 uses a JSON editor. TestFlight or a signed IPA requires your Apple signing
 account. Simulator tests do not produce a device-installable IPA.
 
 See [API details](s3-api.md) and [validation/remaining work](s3-validation.md).
+
+## One phone controlling another
+
+With the target owner's agreement, pair the ESP32 mouse to the target phone and
+enable AssistiveTouch. Connect the controller phone to the board hotspot and
+use its authenticated web dashboard at http://192.168.4.1. Save calibration
+for the target phone. The single pointer clicks targets in order; it does not
+produce simultaneous multitouch. Viewing the target screen requires separate
+mirroring. Two physical phones have not yet been tested together.

@@ -9,8 +9,10 @@ Query capabilities before using extensions on another firmware.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | capabilities | Version, capacity, timing limits |
-| GET | status | Run, memory, network, VPN, OTA, errors |
-| GET | profiles | Saved summaries |
+| GET | status | Full HTTP run, memory, network, VPN, OTA, errors |
+| GET | run/status | Compact BLE-safe run/CPS/output/profile/network status |
+| GET | profiles | Full saved summaries; use HTTP for large directories |
+| GET | profiles/page/0 through profiles/page/7 | Four profile summaries per page, fits BLE response |
 | GET/PUT/DELETE | profiles/0 through profiles/31 | Read/save/remove |
 | POST | run/start | profiles array, fresh nonce of 8 to 64 characters |
 | POST | run/stop | Stop/release request |

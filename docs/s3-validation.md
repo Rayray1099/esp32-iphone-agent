@@ -1,8 +1,10 @@
 # S3 implementation and validation report — 2026-10-22
 
-This is a board-ready development build with verified software/simulator
-results. **No physical ESP32 or iPhone has been tested during this work.**
-The 150 CPS target remains unmeasured. Board pins came from the supplied CSV.
+This development build has software/simulator results and partial physical
+ESP32-S3/iPhone validation. Firmware 0.3.0 is flashed on the supplied board;
+Bluetooth HID works with the iPhone. USB 150 CPS, school eduroam, live Tailscale
+and physical OTA rollback remain unverified. Board pins came from the supplied CSV.
+See [PULSE device validation](pulse-device-validation.md) for current evidence.
 
 ## Delivered implementation
 
@@ -14,8 +16,9 @@ The 150 CPS target remains unmeasured. Board pins came from the supplied CSV.
 | Optimization | Fixed runtime slots, PSRAM profiles/framebuffer/JSON, no timing-loop allocation, repeated coordinates skip movement |
 | BOOT | Cycle, hold-to-start, press-to-stop, hold-to-setup |
 | Web editor | Local assets, screenshot/grid, draggable numbered targets, CRUD/reorder, units, import/export |
-| Native editor | iPhone/iPad, photos/freeze mirror, target CRUD/reorder, JSON, BLE transfers, calibration |
-| Display | Run/connections/system/setup/update, QR, progress, framebuffer snapshots |
+| Native editor | Traditional Chinese PULSE dashboard, iPhone/iPad target editor, photos/freeze mirror, JSON, BLE transfers, calibration |
+| Display | PULSE large CPS digits, live graph/animation, run/connections/system/setup/update, QR, coherent framebuffer snapshots |
+| Bluetooth mouse | Wireless iOS mouse output; finite offline profiles tested on the real phone |
 | eduroam | IDF PEAP/TTLS/TLS, username/password/certs, CA/server/time validation, AP+STA recovery |
 | Tailscale | Pinned MicroLink client, persistent identity, DERP, four peers, controller token |
 | OTA | Ed25519 package verification, SHA256/image/board/project validation, two slots, rollback |
@@ -90,22 +93,23 @@ iPhone or iPad simulator. CI defines the same build and tests.
   fallback have not run against a real enrolled board. No key was supplied.
 - Production OTA HTTP upload, interrupted flash writes and physical failed-boot
   rollback are pending. Host signature tests and emulator rollback are distinct.
-- Full LittleFS interruption/power-loss and production BLE/HTTP integration
-  are pending. Tests exercise the shared CRC/chunk logic, not a physical filesystem.
+- Full LittleFS interruption/power-loss testing is pending. Physical BLE status/profile
+  reads and authenticated LAN framebuffer capture work; this does not establish
+  every HTTP/BLE endpoint or power-loss safety.
 - AI input lease is mode-level. Existing paired legacy debug clients are trusted.
   Keep a single active input controller during AI execution.
 - One last schedule group is saved. BOOT cycles single profiles; multiple named
   saved groups are not implemented. Both editors accept a group of up to16 slots.
 - Native networking is a JSON editor, native zoom is limited, and native timing
   edits use microseconds. The web page has the full forms, units and zoom.
-- Remote screen captures copy rows asynchronously and may straddle a render.
-  Event streaming is bounded polling, not a serial-console or debugger tunnel.
+- Remote captures copy a complete framebuffer under its mutex, then send it
+  asynchronously. Event streaming is bounded polling, not a debugger tunnel.
 - Screen snapshot API returns board TFT pixels, not the phone screen. Upstream
   AirPlay still handles phone mirroring separately.
 - Checked-in Xcode project contains app/unit sources; regenerate with XcodeGen
   to include the UI-test target. A signed physical-device IPA needs Apple signing.
-- Panel presence cannot be detected by framebuffer health alone. Validate
-  actual panel/backlight/USB/power when hardware arrives.
+- Panel presence cannot be detected by framebuffer health alone. The user confirmed
+  the physical status pages are clear; native USB and sustained power still need tests.
 
 ## Hardware acceptance sequence
 

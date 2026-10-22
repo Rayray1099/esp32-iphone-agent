@@ -125,7 +125,7 @@ extension BoardTransport {
         } catch let e as BoardTimeout {
             guard command != "ping", !command.hasPrefix("stream"), let onTimeout else { throw e }
             await onTimeout(command)
-            DebugLog.write("cmd retry after timeout: \(command.prefix(40))")
+            DebugLog.write("cmd retry after timeout: \(Self.safeCommand(command))")
             return try await send(command, timeout: nil)
         }
     }
@@ -165,12 +165,12 @@ extension BoardTransport {
         } catch {
             let ms = (now() - started) * 1000
             if (error as? DeviceError)?.message == "timeout" {
-                if name != "ping" { DebugLog.write(String(format: "cmd #%d %@ → timeout after %.0f ms", id, String(command.prefix(40)), ms)) }
-                throw BoardTimeout(command: String(command.prefix(30)), seconds: timeout)
+                if name != "ping" { DebugLog.write(String(format: "cmd #%d %@ → timeout after %.0f ms", id, Self.safeCommand(command), ms)) }
+                throw BoardTimeout(command: Self.safeCommand(command), seconds: timeout)
             }
-            DebugLog.write(String(format: "cmd #%d %@ → link lost after %.0f ms: %@", id, String(command.prefix(40)), ms,
+            DebugLog.write(String(format: "cmd #%d %@ → link lost after %.0f ms: %@", id, Self.safeCommand(command), ms,
                                   error.localizedDescription))
-            throw DeviceError(message: "board link lost during '\(command.prefix(30))': \(error.localizedDescription)")
+            throw DeviceError(message: "board link lost during '\(Self.safeCommand(command))': \(error.localizedDescription)")
         }
         beat = now()  // last reply of any kind
         if command != "ping" {
@@ -178,7 +178,7 @@ extension BoardTransport {
             onTiming?(String(command.split(separator: " ").first ?? ""), (now() - started) * 1000)
         }
         if name != "ping" {
-            DebugLog.write(String(format: "cmd #%d %@ → %@ %@ (%.0f ms)", id, String(command.prefix(40)),
+            DebugLog.write(String(format: "cmd #%d %@ → %@ %@ (%.0f ms)", id, Self.safeCommand(command),
                                   reply.ok ? "ok" : "err", String(reply.text.prefix(60)), (now() - started) * 1000))
         }
         guard reply.ok else { throw DeviceError(message: "err " + reply.text) }
@@ -200,6 +200,11 @@ extension BoardTransport {
         guard transport.writeIfIdle(prefix + body) else { return false }
         logTimes.append(t)
         return true
+    }
+
+    private static func safeCommand(_ command: String) -> String {
+        if command.hasPrefix("v1 ") { return command.split(separator: " ").prefix(3).joined(separator: " ") + " [payload omitted]" }
+        return String(command.prefix(40))
     }
 
     private func fail(_ id: Int, _ error: Error) {

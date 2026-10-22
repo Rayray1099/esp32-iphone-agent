@@ -5,7 +5,7 @@ final class ClickerUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-mock", "-onboarded", "YES", "-sharePrivacyAsked", "YES", "-acceptedDisclaimer", "YES"]
         app.launch()
-        let clicker = app.buttons["Clicker"]
+        let clicker = app.buttons["Clicker"].firstMatch
         XCTAssertTrue(clicker.waitForExistence(timeout: 20))
         clicker.tap()
         XCTAssertTrue(app.buttons["Add target"].waitForExistence(timeout: 10))

@@ -42,6 +42,7 @@ struct ClickerView: View {
                             Toggle("Landscape", isOn: $profile.landscape)
                             number("Repeats (0 = forever)", value: $profile.repeats)
                             HStack {
+                                Button("Load from board") { perform { profile = try await client.load(slot: slot); message = "Loaded saved board profile." } }
                                 Button("Import JSON") { importing = true }
                                 Button("Export JSON") { exporting = true }
                                 Button("Save to board") { perform { try await client.save(profile, slot: slot) { progress = $0 }; message = "Saved and verified on the board." } }

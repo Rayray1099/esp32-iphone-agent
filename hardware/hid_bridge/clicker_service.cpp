@@ -81,6 +81,8 @@ Profile *live[MaxSchedules]{};
 uint8_t selection = 0;
 String selectedGroup = "[0]", selectedName = "No saved profile";
 String acceptedNonces[32];
+String committedTransfers[16];
+size_t commitCursor = 0;
 size_t nonceCursor = 0;
 double requestedCps = 0;
 String lastNonce, lastError;
@@ -92,6 +94,7 @@ struct Transfer {
   uint32_t crc = 0;
   uint8_t *bytes = nullptr;
   uint32_t touched = 0;
+  bool reading = false;
 } upload;
 using JSON = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>;
 JSON parse(const String &s) {
@@ -695,6 +698,46 @@ String clicker_api(const String &path, const String &method, const String &body,
         free(p);
       }
     }
+  } else if (path == "transfer/read" && method == "POST") {
+    String kind = field(j.get(), "path"), id = field(j.get(), "id");
+    if (!kind.startsWith("profiles/") || id.length() < 8 || id.length() > 48)
+      result = "err invalid read transfer";
+    else {
+      String contents = clicker_api(kind, "GET", "", code);
+      if (code >= 400)
+        return contents;
+      clearUpload();
+      upload.size = contents.length();
+      upload.bytes =
+          (uint8_t *)heap_caps_malloc(upload.size + 1, MALLOC_CAP_SPIRAM);
+      if (!upload.bytes)
+        result = "err no memory";
+      else {
+        memcpy(upload.bytes, contents.c_str(), upload.size + 1);
+        upload.id = id;
+        upload.kind = kind;
+        upload.crc = crc32(upload.bytes, upload.size);
+        upload.reading = true;
+        upload.touched = millis();
+        return "{\"size\":" + String(upload.size) +
+               ",\"crc32\":" + String(upload.crc) + "}";
+      }
+    }
+  } else if (path == "transfer/read-chunk" && method == "POST") {
+    uint32_t offset;
+    if (!upload.bytes || !upload.reading || field(j.get(), "id") != upload.id ||
+        !number(j.get(), "offset", 0, upload.size, offset, UINT32_MAX))
+      result = "err invalid read offset";
+    else {
+      char encoded[257];
+      size_t written = 0, n = std::min<size_t>(192, upload.size - offset);
+      if (n)
+        mbedtls_base64_encode((uint8_t *)encoded, sizeof encoded, &written,
+                              upload.bytes + offset, n);
+      encoded[written] = 0;
+      upload.touched = millis();
+      return "{\"data\":\"" + String(encoded) + "\"}";
+    }
   } else if (path == "transfer/begin" && method == "POST") {
     uint32_t size, crc;
     String id = field(j.get(), "id"), kind = field(j.get(), "path");
@@ -726,7 +769,7 @@ String clicker_api(const String &path, const String &method, const String &body,
     String id = field(j.get(), "id"), b64 = field(j.get(), "data");
     size_t got = 0;
     uint8_t data[192];
-    if (!upload.bytes || id != upload.id ||
+    if (!upload.bytes || upload.reading || id != upload.id ||
         !number(j.get(), "offset", 0, 196608, off, UINT32_MAX) ||
         b64.length() > 256 ||
         mbedtls_base64_decode(data, sizeof data, &got,
@@ -744,7 +787,11 @@ String clicker_api(const String &path, const String &method, const String &body,
     else
       result = "err out of order or conflicting retry";
   } else if (path == "transfer/commit" && method == "POST") {
-    if (!upload.bytes || field(j.get(), "id") != upload.id ||
+    String id = field(j.get(), "id");
+    for (const auto &committed : committedTransfers)
+      if (id.length() && id == committed)
+        return "{\"ok\":true,\"already_committed\":true}";
+    if (!upload.bytes || upload.reading || field(j.get(), "id") != upload.id ||
         upload.used != upload.size ||
         crc32(upload.bytes, upload.size) != upload.crc)
       result = "err incomplete transfer or CRC mismatch";
@@ -752,7 +799,10 @@ String clicker_api(const String &path, const String &method, const String &body,
       upload.bytes[upload.size] = 0;
       String kind = upload.kind, contents((char *)upload.bytes, upload.size);
       clearUpload();
-      return clicker_api(kind, "PUT", contents, code);
+      String out = clicker_api(kind, "PUT", contents, code);
+      if (code < 400)
+        committedTransfers[commitCursor++ % 16] = id;
+      return out;
     }
   } else {
     code = 404;

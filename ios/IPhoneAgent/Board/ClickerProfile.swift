@@ -65,6 +65,26 @@ struct ClickProfile: Codable, Equatable {
         try await upload(JSONEncoder().encode(profile), path: "profiles/\(slot)", progress: progress)
     }
 
+    func load(slot: Int) async throws -> ClickProfile {
+        let id = UUID().uuidString
+        let reply = try await request("transfer/read", method: "POST", object: ["id": id, "path": "profiles/\(slot)"])
+        guard let metadata = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
+              let count = metadata["size"] as? Int, (1...196608).contains(count),
+              let crc = metadata["crc32"] as? NSNumber else { throw DeviceError(message: "Invalid board transfer metadata.") }
+        var data = Data()
+        while data.count < count {
+            let raw = try await request("transfer/read-chunk", method: "POST", object: ["id": id, "offset": data.count])
+            guard let object = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  let encoded = object["data"] as? String, let chunk = Data(base64Encoded: encoded),
+                  !chunk.isEmpty, data.count + chunk.count <= count else { throw DeviceError(message: "Interrupted board download.") }
+            data.append(chunk)
+        }
+        guard Self.crc32(data) == crc.uint32Value else { throw DeviceError(message: "Profile integrity check failed.") }
+        let profile = try JSONDecoder().decode(ClickProfile.self, from: data)
+        try profile.validate()
+        return profile
+    }
+
     func start(slots: [Int], nonce: String = UUID().uuidString) async throws {
         guard (1...16).contains(slots.count), slots.allSatisfy({ (0..<32).contains($0) }) else {
             throw DeviceError(message: "Choose 1–16 profile slots from 0 to 31.")

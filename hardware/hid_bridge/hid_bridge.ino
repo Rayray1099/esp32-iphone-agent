@@ -262,7 +262,7 @@ void loop() {
   static bool healthChecked = false;
   if (!healthChecked && millis() > 10000) {
     healthChecked = true;
-    if (clicker_healthy() && display_healthy() && ESP.getPsramSize() >= 8*1024*1024)
+    if (clicker_healthy() && display_healthy() && heap_caps_get_total_size(MALLOC_CAP_SPIRAM) >= 7*1024*1024)
       esp_ota_mark_app_valid_cancel_rollback();
     else {
       esp_ota_img_states_t state;

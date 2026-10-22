@@ -88,6 +88,21 @@ public:
     due = now;
     px = py = 0;
     rehomedLoops = 0;
+    multiPosition = false;
+    uint16_t firstX = 0, firstY = 0;
+    bool first = true;
+    for (size_t i = 0; i < count; ++i)
+      for (size_t k = 0; k < profiles[i]->count; ++k) {
+        const auto &p = profiles[i]->points[k];
+        if (!p.enabled)
+          continue;
+        if (first) {
+          firstX = p.x;
+          firstY = p.y;
+          first = false;
+        } else if (p.x != firstX || p.y != firstY)
+          multiPosition = true;
+      }
     for (size_t i = 0; i < count; ++i) {
       slots[i].p = profiles[i];
       slots[i].due = now;
@@ -205,7 +220,8 @@ public:
         s.running = false;
         return;
       }
-      if (cal.rehomeLoops && s.loops - rehomedLoops >= cal.rehomeLoops) {
+      if (multiPosition && cal.rehomeLoops &&
+          s.loops - rehomedLoops >= cal.rehomeLoops) {
         phase = Phase::Home;
         home = 0;
         rehomedLoops = s.loops;
@@ -232,6 +248,7 @@ private:
   uint64_t due = 0;
   int32_t px = 0, py = 0, tx = 0, ty = 0;
   bool held = false;
+  bool multiPosition = false;
   uint32_t rehomedLoops = 0;
   bool emit(Report r) {
     if (!usb.send(r))

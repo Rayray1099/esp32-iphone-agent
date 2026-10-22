@@ -8,6 +8,11 @@ static Preferences remotePrefs;
 static bool initialized = false, enabled = false;
 static String authKey, deviceName, lastError;
 static uint32_t retryAfter = 0;
+static SemaphoreHandle_t remoteLock = xSemaphoreCreateRecursiveMutex();
+struct RemoteLock {
+  RemoteLock() { xSemaphoreTakeRecursive(remoteLock, portMAX_DELAY); }
+  ~RemoteLock() { xSemaphoreGiveRecursive(remoteLock); }
+};
 static void initRemote() {
   if (initialized)
     return;
@@ -18,6 +23,7 @@ static void initRemote() {
   deviceName = remotePrefs.getString("name", "s3-clicker");
 }
 void remote_poll() {
+  RemoteLock lock;
   initRemote();
   if (!enabled || vpn || WiFi.status() != WL_CONNECTED ||
       (int32_t)(millis() - retryAfter) < 0)
@@ -45,12 +51,14 @@ void remote_poll() {
   }
 }
 void remote_stop() {
+  RemoteLock lock;
   if (vpn) {
     microlink_destroy(vpn);
     vpn = nullptr;
   }
 }
 String remote_status() {
+  RemoteLock lock;
   initRemote();
   static const char *states[] = {"idle",        "wifi-wait", "connecting",
                                  "registering", "connected", "reconnecting",
@@ -82,6 +90,7 @@ String remote_status() {
   return result;
 }
 String remote_configure(const String &json) {
+  RemoteLock lock;
   initRemote();
   if (clicker_busy())
     return "err stop clicking before changing Tailscale";

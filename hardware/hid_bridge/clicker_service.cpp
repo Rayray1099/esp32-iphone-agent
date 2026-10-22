@@ -17,8 +17,11 @@
 extern String run(const String &);
 using namespace clicker;
 static std::atomic<bool> usbCompleted{false};
-extern "C" void __real_tud_hid_report_complete_cb(uint8_t, const uint8_t*, uint16_t);
-extern "C" void __wrap_tud_hid_report_complete_cb(uint8_t instance, const uint8_t* report, uint16_t len) {
+extern "C" void __real_tud_hid_report_complete_cb(uint8_t, const uint8_t *,
+                                                  uint16_t);
+extern "C" void __wrap_tud_hid_report_complete_cb(uint8_t instance,
+                                                  const uint8_t *report,
+                                                  uint16_t len) {
   __real_tud_hid_report_complete_cb(instance, report, len);
   usbCompleted.store(true, std::memory_order_release);
 }
@@ -30,20 +33,29 @@ class USBTransport : public Transport {
 public:
   bool connected() const override {
     bool online = tud_mounted() && !tud_suspended();
-    if (!online) { pending = false; usbCompleted = false; }
+    if (!online) {
+      pending = false;
+      usbCompleted = false;
+    }
     return online;
   }
   bool send(Report r) override {
     if (pending) {
-      if (!usbCompleted.exchange(false, std::memory_order_acquire)) return false;
+      if (!usbCompleted.exchange(false, std::memory_order_acquire))
+        return false;
       pending = false;
-      if (queued.buttons==r.buttons && queued.dx==r.dx && queued.dy==r.dy) return true;
+      if (queued.buttons == r.buttons && queued.dx == r.dx && queued.dy == r.dy)
+        return true;
       // A stop may replace an in-flight press. Drain it, then send release.
     }
-    if (!tud_hid_ready()) return false;
+    if (!tud_hid_ready())
+      return false;
     const int8_t report[5] = {int8_t(r.buttons), r.dx, r.dy, 0, 0};
     usbCompleted = false;
-    if (tud_hid_report(HID_REPORT_ID_MOUSE, report, sizeof report)) { queued=r; pending=true; }
+    if (tud_hid_report(HID_REPORT_ID_MOUSE, report, sizeof report)) {
+      queued = r;
+      pending = true;
+    }
     return false;
   }
 } transport;
@@ -64,6 +76,7 @@ uint8_t selection = 0;
 String selectedGroup = "[0]", selectedName = "No saved profile";
 String acceptedNonces[32];
 size_t nonceCursor = 0;
+double requestedCps = 0;
 String lastNonce, lastError;
 bool ready = false;
 std::atomic<uint32_t> restartAt{0};
@@ -158,7 +171,7 @@ bool decodeProfile(cJSON *j, Profile &p) {
   String name = field(j, "name");
   if (name.isEmpty() || name.length() > 48)
     return false;
-  p = Profile{};
+  p.count = 0;
   strlcpy(p.name, name.c_str(), sizeof p.name);
   if (!number(j, "repeats", 0, 1000000000, p.repeats, 0))
     return false;
@@ -249,6 +262,20 @@ String start(cJSON *j) {
   if (ok) {
     auto c = calibration(live[0]->landscape);
     ok = engine.start((const Profile *const *)live, n, c, esp_timer_get_time());
+    if (ok) {
+      requestedCps = 0;
+      for (int i = 0; i < n; ++i) {
+        uint64_t period = 0;
+        unsigned enabled = 0;
+        for (int k = 0; k < live[i]->count; ++k)
+          if (live[i]->points[k].enabled) {
+            period += uint64_t(live[i]->points[k].pressUs) +
+                      live[i]->points[k].delayUs;
+            ++enabled;
+          }
+        requestedCps += period ? 1e6 * enabled / period : 0;
+      }
+    }
   }
   if (!ok)
     releaseProfiles();
@@ -266,6 +293,7 @@ String start(cJSON *j) {
   }
   if (!ok)
     return "err invalid profile, USB unavailable, or calibration missing";
+  diagnostic_event("Clicker started from saved profiles");
   return "ok";
 }
 void worker(void *) {
@@ -310,6 +338,7 @@ void clearUpload() {
 }
 } // namespace
 void clicker_begin() {
+  diagnostic_event("Firmware startup: stopped by default");
   guard = xSemaphoreCreateMutex();
   apiGuard = xSemaphoreCreateRecursiveMutex();
   prefs.begin("clicker", false);
@@ -350,6 +379,16 @@ bool clicker_busy() {
   return s.running || s.releasing;
 }
 bool clicker_healthy() { return ready && guard && apiGuard; }
+double clicker_requested_cps() {
+  xSemaphoreTake(guard, portMAX_DELAY);
+  double value = requestedCps;
+  xSemaphoreGive(guard);
+  return value;
+}
+String clicker_last_error() {
+  APILock lock;
+  return lastError;
+}
 bool clicker_manual_begin() {
   xSemaphoreTake(guard, portMAX_DELAY);
   bool ok = !engine.stats().running && !engine.stats().releasing &&
@@ -435,6 +474,10 @@ String clicker_api(const String &path, const String &method, const String &body,
     return "{\"api\":1,\"board\":\"s3-n8r8-st7789\",\"profiles\":32,\"points\":"
            "1000,\"schedules\":16,\"timing_us\":1,\"usb_poll_us\":1000,"
            "\"version\":\"0.2.0\"}";
+  if (path == "logs" && method == "GET")
+    return diagnostic_json(false);
+  if (path == "system/tasks" && method == "GET")
+    return diagnostic_json(true);
   if (path == "status") {
     auto s = clicker_stats();
     JSON o(cJSON_CreateObject(), cJSON_Delete);
@@ -451,6 +494,7 @@ String clicker_api(const String &path, const String &method, const String &body,
         s.startedUs ? (esp_timer_get_time() - s.startedUs) / 1e6 : 0;
     cJSON_AddNumberToObject(o.get(), "usb_cps",
                             seconds > 0 ? s.clicks / seconds : 0);
+    cJSON_AddNumberToObject(o.get(), "requested_cps", clicker_requested_cps());
     cJSON_AddNumberToObject(o.get(), "heap", ESP.getFreeHeap());
     cJSON_AddNumberToObject(o.get(), "psram", ESP.getFreePsram());
     cJSON_AddNumberToObject(o.get(), "uptime_ms", millis());
@@ -487,6 +531,7 @@ String clicker_api(const String &path, const String &method, const String &body,
     return "{\"ok\":true}";
   }
   if (path == "run/stop" && method == "POST") {
+    diagnostic_event("Stop requested");
     stopRequested = true;
     return "{\"accepted\":true}";
   }

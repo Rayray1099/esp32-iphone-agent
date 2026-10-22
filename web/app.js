@@ -63,4 +63,11 @@ $('vpnDisable').onclick=action(async()=>{await api('tailscale','PUT',{enabled:fa
 $('update').onclick=action(async()=>{const file=$('otaFile').files[0];if(!file)throw new Error('Select a signed .ota package.');if(file.size>0x2e0000+172)throw new Error('Package is too large for this board.');
   await new Promise((resolve,reject)=>{const request=new XMLHttpRequest();request.open('POST','/api/v1/ota');request.setRequestHeader('Authorization','Bearer '+state.token);request.upload.onprogress=event=>{if(event.lengthComputable){$('otaProgress').value=event.loaded/event.total*100;$('otaMessage').textContent='Uploading '+Math.round(event.loaded/event.total*100)+'%';}};request.onload=()=>request.status<300?resolve():reject(new Error(request.responseText));request.onerror=()=>reject(new Error('Upload interrupted. The previous boot slot remains selected.'));request.send(file);});$('otaMessage').textContent='Verified. Board restarting; reconnect in a few seconds.';});
 $('reboot').onclick=action(async()=>{await api('system/reboot','POST',{});tell('Board restarting.');});
+let logTimer;
+$('logToggle').onclick=action(async()=>{
+  if(logTimer){clearInterval(logTimer);logTimer=null;$('logToggle').textContent='Stream event log';return;}
+  const update=async()=>{$('eventLog').textContent=JSON.stringify(await api('logs'),null,2);};
+  await update();logTimer=setInterval(()=>update().catch(()=>{}),1500);$('logToggle').textContent='Stop log stream';
+});
+$('taskStats').onclick=action(async()=>{$('taskInfo').textContent=JSON.stringify(await api('system/tasks'),null,2);});
 setInterval(()=>{if(state.token)refresh().catch(()=>{});},2000);render();

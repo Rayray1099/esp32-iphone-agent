@@ -37,12 +37,15 @@ bool ota_upload(void *request) {
   uint8_t header[172];
   esp_ota_handle_t handle = 0;
   bool begun = false;
+  bool ownsInput = false;
   auto fail = [&](const char *reason) {
     if (begun)
       esp_ota_abort(handle);
     state = reason;
+    diagnostic_event(reason);
     updating = false;
-    clicker_update_end();
+    if (ownsInput)
+      clicker_update_end();
     httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, reason);
     return false;
   };
@@ -64,9 +67,12 @@ bool ota_upload(void *request) {
     return fail("invalid-signature");
   if (!clicker_update_begin())
     return fail("input-release-pending");
+  ownsInput = true;
   if (esp_ota_begin(target, size, &handle) != ESP_OK)
     return fail("flash-begin-failed");
   begun = true;
+  diagnostic_event(
+      "Signed OTA accepted; input released; writing inactive slot");
   state = "writing";
   mbedtls_sha256_context hash;
   mbedtls_sha256_init(&hash);
@@ -101,6 +107,7 @@ bool ota_upload(void *request) {
   if (esp_ota_set_boot_partition(target) != ESP_OK)
     return fail("boot-slot-failed");
   state = "restart-pending";
+  diagnostic_event("OTA image verified; restart pending");
   httpd_resp_set_type(r, "application/json");
   httpd_resp_sendstr(r, "{\"ok\":true,\"restart\":true}");
   xTaskCreate(

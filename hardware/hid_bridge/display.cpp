@@ -3,11 +3,13 @@
 #include "netcfg.h"
 #include "src/clicker/screen.h"
 #include <SPI.h>
+#include <WiFi.h>
 #include <cJSON.h>
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_timer.h>
 #include <tusb.h>
+extern const char *resetReason();
 static uint16_t *framebuffer;
 static SemaphoreHandle_t frameLock;
 static SPIClass lcd(FSPI);
@@ -55,6 +57,11 @@ static void renderTask(void *) {
            token = controller_token();
     String remote = remote_status(), vpn = field(remote, "ip"),
            ota = ota_status(), update = field(ota, "state");
+    String error = clicker_last_error(), networkStatus = net_status_json();
+    String networkError = field(networkStatus, "error");
+    if (networkError.length())
+      error = networkError;
+    String qr = "WIFI:T:WPA;S:" + ssid + ";P:" + pass + ";;";
     clicker::ScreenData d;
     d.profile = name.c_str();
     d.network = net.c_str();
@@ -68,6 +75,11 @@ static void renderTask(void *) {
     d.password = pass.c_str();
     d.token = token.c_str();
     d.ota = update.c_str();
+    d.qr = qr.c_str();
+    d.error = error.c_str();
+    d.reset = resetReason();
+    d.rssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+    d.requestedCps = clicker_requested_cps();
     d.clicks = s.clicks;
     d.loops = s.loops;
     d.late = s.late;

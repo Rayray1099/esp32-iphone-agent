@@ -8,6 +8,8 @@ String clicker_api(const String &path, const String &method, const String &body,
 clicker::Stats clicker_stats();
 bool clicker_busy();
 bool clicker_healthy();
+double clicker_requested_cps();
+String clicker_last_error();
 bool clicker_manual_begin();
 void clicker_manual_end(bool held);
 bool clicker_update_begin();
@@ -29,3 +31,5 @@ String remote_status();
 String remote_configure(const String &json);
 String ota_status();
 bool ota_upload(void *req);
+void diagnostic_event(const char* message);
+String diagnostic_json(bool tasks);

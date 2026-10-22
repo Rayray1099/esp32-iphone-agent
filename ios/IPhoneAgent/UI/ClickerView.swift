@@ -17,7 +17,8 @@ struct ClickerView: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var zoom = 1.0
-    @State private var spanX = "", spanY = ""
+    @State private var spanX = ""
+    @State private var spanY = ""
     @State private var networkJSON = "{\"mode\":\"apsta\",\"ssid\":\"eduroam\",\"eap\":{\"method\":\"peap\",\"username\":\"\",\"identity\":\"\",\"password\":\"\",\"server\":\"\",\"ca\":\"\"}}"
     private var client: ClickerClient { ClickerClient(channel: app.board.commands) }
 
@@ -127,7 +128,7 @@ struct ClickerView: View {
         GeometryReader { geometry in
             ZStack {
                 RoundedRectangle(cornerRadius: 14).fill(Color(uiColor: .secondarySystemBackground))
-                if let image { Image(uiImage: image).resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped() }
+                if let image { Image(uiImage: image).resizable().frame(width: geometry.size.width, height: geometry.size.height).clipped() }
                 ForEach(Array(profile.points.enumerated()), id: \.element.id) { index, target in
                     Text("\(index + 1)").font(.system(size: 14, weight: .bold)).frame(width: 34, height: 34)
                         .background(target.enabled ? Color.green : Color.gray, in: Circle()).foregroundStyle(.black)

@@ -34,3 +34,6 @@ output/
 *.ota
 .playwright-cli/
 ios/build-sim/
+hardware/emulator/build/
+hardware/emulator/sdkconfig
+hardware/emulator/sdkconfig.old

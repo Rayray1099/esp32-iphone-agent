@@ -1,4 +1,5 @@
 #pragma once
+#include "../qrcode/qrcodegen.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,10 @@ struct ScreenData {
   const char *password = "";
   const char *token = "";
   const char *ota = "idle";
+  const char *qr = "";
+  const char *reset = "";
+  int rssi = 0;
+  double requestedCps = 0;
   uint64_t clicks = 0;
   uint32_t loops = 0, late = 0, heap = 0, psram = 0, uptime = 0;
   unsigned schedules = 0, point = 0;
@@ -42,6 +47,8 @@ public:
       text(10, 119, b, 2, 0xffff);
       snprintf(b, sizeof b, "USB %.1f CPS", d.cps);
       text(10, 145, b, 2, 0x4fbc);
+      snprintf(b, sizeof b, "REQUESTED %.1f CPS", d.requestedCps);
+      text(10, 161, b, 1, 0xffff);
       snprintf(b, sizeof b, "%u SCHEDULES   POINT %u", d.schedules,
                d.point + 1);
       text(10, 176, b, 1, 0xffff);
@@ -55,6 +62,8 @@ public:
       row(135, "USB", d.usb);
       row(157, "BLE", d.ble);
       row(179, "TAILNET", d.vpn);
+      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi);
+      text(10, 199, b, 1, 0xffff);
     } else if (page == 2) {
       row(69, "FIRMWARE", "0.2.0 / S3 N8R8");
       snprintf(b, sizeof b, "%lu SEC", (unsigned long)d.uptime);
@@ -66,12 +75,15 @@ public:
       snprintf(b, sizeof b, "%lu", (unsigned long)d.late);
       row(157, "LATE", b);
       row(179, "ERROR", d.error);
+      row(199, "RESET", d.reset);
     } else {
-      row(68, "HOTSPOT", d.ssid);
-      row(88, "PASSWORD", d.password);
-      row(108, "OPEN", "HTTP://192.168.4.1");
-      text(10, 133, "CONTROLLER TOKEN", 1, 0x4fbc);
-      text(10, 149, d.token, 1, 0xffff);
+      text(10, 68, d.ssid, 1, 0xffff);
+      text(10, 86, d.password, 1, 0x4fbc);
+      text(10, 105, "SCAN TO JOIN", 1, 0xffff);
+      text(10, 123, "192.168.4.1", 1, 0xffff);
+      qr(d.qr, 200, 65);
+      text(10, 145, "TOKEN", 1, 0x4fbc);
+      text(10, 158, d.token, 1, 0xffff);
       row(176, "UPDATE", d.ota);
       text(10, 197, "HOLD BOOT 4 SEC FOR SETUP", 1, 0xffff);
     }
@@ -81,6 +93,22 @@ public:
 
 private:
   uint16_t *fb;
+  void qr(const char *data, int x, int y) {
+    if (!data || !*data)
+      return;
+    uint8_t scratch[qrcodegen_BUFFER_LEN_FOR_VERSION(6)],
+        code[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    if (!qrcodegen_encodeText(data, scratch, code, qrcodegen_Ecc_LOW, 1, 6,
+                              qrcodegen_Mask_AUTO, true))
+      return;
+    int size = qrcodegen_getSize(code);
+    int scale = 2;
+    fill(x - 8, y - 8, (size + 8) * scale, (size + 8) * scale, 0xffff);
+    for (int j = 0; j < size; ++j)
+      for (int i = 0; i < size; ++i)
+        if (qrcodegen_getModule(code, i, j))
+          fill(x + i * scale, y + j * scale, scale, scale, 0);
+  }
   void fill(int x, int y, int w, int h, uint16_t c) {
     for (int j = y; j < y + h && j < 240; j++)
       for (int i = x; i < x + w && i < 320; i++)

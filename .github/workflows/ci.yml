@@ -63,6 +63,26 @@ jobs:
         with:
           name: host-screen-fixtures
           path: output/screens/
+  emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: ESP32-S3 CPU adapter emulation
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32s3
+          path: hardware/emulator
+          command: |
+            idf.py build
+            python $IDF_PATH/tools/idf_tools.py install qemu-xtensa
+            . $IDF_PATH/export.sh
+            python ../../tools/run_qemu.py --qemu "$(command -v qemu-system-xtensa)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s3-cpu-emulator-log
+          path: output/emulator/
   server:
     runs-on: ubuntu-latest
     strategy:

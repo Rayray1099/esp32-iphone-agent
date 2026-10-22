@@ -5,6 +5,10 @@ struct IPhoneAgentApp: App {
     @StateObject private var app = AppModel.shared
 
     init() {
+        // This distribution defaults to Traditional Chinese; retain a later user language choice.
+        if UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["AppleLanguages"] == nil {
+            UserDefaults.standard.set(["zh-Hant-TW", "en"], forKey: "AppleLanguages")
+        }
         _ = AppModel.shared  // also on a background launch for an App Intent, which shows no scene
         CrashReports.shared.start()
     }

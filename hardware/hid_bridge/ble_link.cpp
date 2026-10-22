@@ -329,8 +329,8 @@ void ble_begin(const String &name) {
   data.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
   data.setAppearance(HID_MOUSE);
   data.addServiceUUID(NimBLEUUID(uint16_t(0x1812)));
-  data.addServiceUUID(NimBLEUUID(UUID("0000")));
-  scan.setName(name.c_str());
+  data.setName(name.c_str());
+  scan.addServiceUUID(NimBLEUUID(UUID("0000")));
   adv->setAdvertisementData(data);
   adv->setScanResponseData(scan);
   adv->enableScanResponse(true);
@@ -345,6 +345,24 @@ void ble_begin(const String &name) {
 
 bool ble_connected() { return peerCount() > 0; }
 bool ble_mouse_connected() { return mousePeer.load() >= 0; }
+String ble_mouse_status_json() {
+  String result = "{\"bonds\":" + String(NimBLEDevice::getNumBonds()) +
+    ",\"report_handle\":" + String(mouseReport ? mouseReport->getHandle() : 0) +
+    ",\"peers\":[";
+  bool comma = false;
+  for (int i = 0; i < MAX_PEERS; ++i) {
+    int h = peers[i];
+    if (h < 0) continue;
+    auto ci = server->getPeerInfoByHandle(h);
+    if (comma) result += ',';
+    comma = true;
+    result += String("{\"encrypted\":") + (ci.isEncrypted() ? "true" : "false") +
+      ",\"bonded\":" + (ci.isBonded() ? "true" : "false") +
+      ",\"mouse_subscribed\":" + (mouseSubscribed[i] ? "true" : "false") +
+      ",\"interval_us\":" + String(ci.getConnInterval() * 1250) + "}";
+  }
+  return result + "]}";
+}
 bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy) {
   int peer = mousePeer.load();
   int64_t now = esp_timer_get_time();

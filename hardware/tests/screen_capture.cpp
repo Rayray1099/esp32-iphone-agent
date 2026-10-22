@@ -8,6 +8,7 @@ int main(int argc,char** argv){
   d.ble="CONNECTED";d.vpn="100.82.93.22";d.ssid="ESP32Agent-DEMO";d.password="DEMO-ONLY";d.token="DEMO TOKEN - NOT A REAL CREDENTIAL";d.ota="VERIFYING 75 PERCENT";
   d.clicks=123456;d.loops=42;d.late=3;d.heap=112344;d.psram=6041120;d.uptime=3600;d.schedules=16;d.point=999;d.cps=149.8;d.running=true;
   d.qr="WIFI:T:WPA;S:ESP32Agent-DEMO;P:DEMO-ONLY;;";d.requestedCps=150;d.rssi=-51;d.reset="POWER-ON";
+  d.animationMs=1280; for(int i=0;i<24;++i)d.history[i]=135+(i%7)*2;
   for(int page=0;page<6;++page){
     if(page==4){d.running=false;d.error="EAP CERTIFICATE MISMATCH";}
     if(page==5){d.ota="INVALID SIGNATURE";}

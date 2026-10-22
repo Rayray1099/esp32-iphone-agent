@@ -593,7 +593,7 @@ String clicker_api(const String &path, const String &method, const String &body,
     return "{\"error\":\"Restart pending\"}";
   }
   auto j = parse(body);
-  const bool readOnly = path == "capabilities" || path == "status" ||
+  const bool readOnly = path == "capabilities" || path == "status" || path == "run/status" ||
                         path == "logs" || path == "system/tasks";
   const bool readWrite = path == "input/output" || path == "network" || path == "tailscale" ||
                          path == "calibration" || path == "run/selection";
@@ -607,11 +607,52 @@ String clicker_api(const String &path, const String &method, const String &body,
   if (path == "capabilities")
     return "{\"api\":1,\"board\":\"s3-n8r8-st7789\",\"profiles\":32,\"points\":"
            "1000,\"schedules\":16,\"timing_us\":1,\"usb_poll_us\":1000,"
-           "\"version\":\"0.2.0\"}";
+           "\"version\":\"0.3.0\"}";
+  // Fits one BLE response even with a full UTF-8 profile name. Network/task
+  // diagnostics stay in the larger HTTP status response.
+  if (path == "run/status") {
+    auto s = clicker_stats();
+    JSON o(cJSON_CreateObject(), cJSON_Delete);
+    cJSON_AddBoolToObject(o.get(), "running", s.running);
+    cJSON_AddBoolToObject(o.get(), "releasing", s.releasing);
+    cJSON_AddNumberToObject(o.get(), "clicks", double(s.clicks));
+    cJSON_AddNumberToObject(o.get(), "loops", s.loops);
+    cJSON_AddNumberToObject(o.get(), "active", s.active);
+    cJSON_AddNumberToObject(o.get(), "point", s.point);
+    cJSON_AddNumberToObject(o.get(), "late", double(s.late));
+    double seconds = (s.lastClickUs - s.firstClickUs) / 1e6;
+    cJSON_AddNumberToObject(o.get(), "output_cps", seconds > 0 ? (s.clicks - 1) / seconds : 0);
+    cJSON_AddNumberToObject(o.get(), "requested_cps", clicker_requested_cps());
+    cJSON_AddStringToObject(o.get(), "output", clicker_output());
+    cJSON_AddBoolToObject(o.get(), "mouse_connected", selectedTransport.connected());
+    cJSON_AddStringToObject(o.get(), "profile", clicker_selected_name().c_str());
+    cJSON_AddStringToObject(o.get(), "network", net_mode());
+    return jsonText(o.get());
+  }
   if (path == "logs" && method == "GET")
     return diagnostic_json(false);
   if (path == "system/tasks" && method == "GET")
     return diagnostic_json(true);
+  if (path.startsWith("profiles/page/") && method == "GET") {
+    int page = path.substring(14).toInt();
+    if (page < 0 || page > 7 || path != "profiles/page/" + String(page)) {
+      code = 400;
+      return "{\"error\":\"Page 0-7 required\"}";
+    }
+    JSON list(cJSON_CreateArray(), cJSON_Delete);
+    auto *p = allocProfile();
+    if (!p) { code = 503; return "{\"error\":\"Profile memory unavailable\"}"; }
+    for (int id = page * 4; id < page * 4 + 4; ++id) {
+      if (!load(id, *p)) continue;
+      auto *item = cJSON_CreateObject();
+      cJSON_AddNumberToObject(item, "id", id);
+      cJSON_AddStringToObject(item, "name", p->name);
+      cJSON_AddNumberToObject(item, "points", p->count);
+      cJSON_AddItemToArray(list.get(), item);
+    }
+    free(p);
+    return jsonText(list.get());
+  }
   if (path == "status") {
     auto s = clicker_stats();
     JSON o(cJSON_CreateObject(), cJSON_Delete);
@@ -658,7 +699,8 @@ String clicker_api(const String &path, const String &method, const String &body,
       prefs.putString("output", output);
     }
     return String("{\"output\":\"") + clicker_output() +
-      "\",\"connected\":" + (selectedTransport.connected() ? "true" : "false") + "}";
+      "\",\"connected\":" + (selectedTransport.connected() ? "true" : "false") +
+      ",\"bluetooth\":" + ble_mouse_status_json() + "}";
   }
   if (path == "input/claim" && method == "POST") {
     xSemaphoreTake(guard, portMAX_DELAY);

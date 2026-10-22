@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {token:'',points:[{x:5000,y:5000,press_us:1000,delay_us:5000,enabled:true}],selected:0,dirty:false,pointer:{x:0,y:0},received:0,background:null};
+const state = {token:'',points:[{x:5000,y:5000,press_us:1000,delay_us:5000,enabled:true}],selected:0,dirty:false,pointer:{x:0,y:0},received:0,background:null,fast:false,cpsHistory:[]};
 const tell = (message,error=false) => { $('notice').textContent=message;$('notice').classList.toggle('error',error); };
 async function api(path,method='GET',body) {
   const response=await fetch('/api/v1/'+path,{method,headers:{Authorization:'Bearer '+state.token,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});
@@ -9,7 +9,7 @@ async function api(path,method='GET',body) {
 }
 const action=fn=>async event=>{try{await fn(event);}catch(error){tell(error.message,true);}};
 const uint=(value,min=1,max=3600000000)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<min||n>max)throw new Error(`Enter an integer from ${min} to ${max}.`);return n;};
-function profile(){return {schema:1,device:$('deviceID').value.trim(),name:$('name').value.trim(),repeats:uint($('repeats').value,0,1000000000),landscape:$('orientation').value==='landscape',fast:false,points:state.points};}
+function profile(){return {schema:1,device:$('deviceID').value.trim(),name:$('name').value.trim(),repeats:uint($('repeats').value,0,1000000000),landscape:$('orientation').value==='landscape',fast:state.fast,points:state.points};}
 function validate(p){if(!p||(p.schema!==undefined&&p.schema!==1)||typeof p.name!=='string'||!p.name.trim()||new TextEncoder().encode(p.name).length>48||!Array.isArray(p.points)||p.points.length<1||p.points.length>1000)throw new Error('A schema 1 profile needs a name and 1–1000 targets.');
   if((p.landscape!==undefined&&typeof p.landscape!=='boolean')||(p.fast!==undefined&&typeof p.fast!=='boolean'))throw new Error('Orientation and fast mode must be boolean values.');
   if(!/^[A-Za-z0-9_-]{1,32}$/.test(p.device??'default'))throw new Error('Use 1-32 letters, numbers, hyphens or underscores for the calibration ID.');
@@ -31,9 +31,19 @@ function render(){
     for(const [label,title,fn] of [['↑','Move up',()=>{if(i){[state.points[i-1],state.points[i]]=[state.points[i],state.points[i-1]];}}],['↓','Move down',()=>{if(i+1<state.points.length){[state.points[i+1],state.points[i]]=[state.points[i],state.points[i+1]];}}],['⧉','Duplicate',()=>{if(state.points.length>=1000)throw new Error('Maximum 1,000 targets.');state.points.splice(i+1,0,{...q});}],['×','Delete',()=>{if(state.points.length===1)throw new Error('Keep at least one target.');state.points.splice(i,1);}]]){const button=document.createElement('button');button.textContent=label;button.setAttribute('aria-label',`${title} target ${i+1}`);button.onclick=action(()=>{fn();dirty();render();});tools.append(button);}row.append(tools);$('points').append(row);
   });
 }
-function applyProfile(p){validate(p);$('name').value=p.name;$('deviceID').value=p.device??'default';$('repeats').value=p.repeats??0;$('orientation').value=p.landscape?'landscape':'portrait';state.points=p.points.map(q=>({...q,enabled:q.enabled!==false}));state.selected=0;state.dirty=false;render();}
+function applyProfile(p){validate(p);state.fast=!!p.fast;$('name').value=p.name;$('deviceID').value=p.device??'default';$('repeats').value=p.repeats??0;$('orientation').value=p.landscape?'landscape':'portrait';state.points=p.points.map(q=>({...q,enabled:q.enabled!==false}));state.selected=0;state.dirty=false;render();}
 async function save(){const p=validate(profile());await api('profiles/'+$('slot').value,'PUT',p);state.dirty=false;tell('Profile verified and saved on the board.');}
-async function refresh(){try{const s=await api('status');$('connection').textContent=s.running?'● Running':'● Board connected';$('authPanel').hidden=true;$('status').textContent=JSON.stringify(s,null,2);
+function updateLive(s){
+  const cps=Number(s.output_cps??s.usb_cps??0);
+  $('liveCPS').textContent=cps.toFixed(1);$('liveState').textContent=s.running?'LIVE OUTPUT':'LAST RUN';
+  document.querySelector('.live-hero').classList.toggle('running',!!s.running);
+  $('liveBasis').textContent=(s.output==='bluetooth'?'Bluetooth host submissions':'USB completed clicks')+' · requested '+Number(s.requested_cps??0).toFixed(0)+' CPS';
+  $('liveProfile').textContent=s.profile||'No saved profile selected';$('liveCount').textContent=Number(s.clicks??0).toLocaleString()+' clicks';
+  state.cpsHistory.push(s.running?cps:0);if(state.cpsHistory.length>36)state.cpsHistory.shift();
+  const values=Array(Math.max(0,36-state.cpsHistory.length)).fill(0).concat(state.cpsHistory);
+  $('liveBars').replaceChildren(...values.map(v=>{const bar=document.createElement('i');bar.style.height=Math.max(3,Math.min(28,28*v/Math.max(1,Number(s.requested_cps??50))))+'px';return bar;}));
+}
+async function refresh(){try{const s=await api('status');$('connection').textContent=s.running?'● Running':'● Board connected';$('authPanel').hidden=true;updateLive(s);$('status').textContent=JSON.stringify(s,null,2);
   const metrics=[['Output clicks',s.clicks??0],[s.output==='bluetooth'?'BLE submitted CPS':'USB CPS',Number(s.output_cps??s.usb_cps??0).toFixed(1)],['Schedules',s.active??0],['Late events',s.late??0]];$('runStats').replaceChildren();for(const [label,value]of metrics){const card=document.createElement('div');card.className='stat';const strong=document.createElement('strong');strong.textContent=value;const span=document.createElement('span');span.textContent=label;card.append(strong,span);$('runStats').append(card);}return s;
 }catch(error){$('connection').textContent='○ Not connected';throw error;}}
 for(let i=0;i<32;i++){const o=document.createElement('option');o.value=i;o.textContent='Slot '+i;$('slot').append(o);}
@@ -44,7 +54,7 @@ $('orientation').onchange=()=>{dirty();render();};$('name').oninput=dirty;$('dev
 $('zoom').oninput=()=>{$('canvas').style.width=$('zoom').value+'%';};
 $('screenshot').onchange=action(event=>{const file=event.target.files[0];if(!file)return;if(file.size>20000000)throw new Error('Choose an image smaller than 20 MB.');if(state.background)URL.revokeObjectURL(state.background);state.background=URL.createObjectURL(file);$('background').src=state.background;$('background').hidden=false;render();});
 $('applyDelay').onclick=action(()=>{const delay=uint(Number($('bulkDelay').value)*Number($('bulkUnit').value));state.points.forEach(q=>q.delay_us=delay);dirty();render();});
-$('fast').onclick=action(()=>{const cps=uint($('cps').value,1,500);const period=Math.round(1000000/cps);state.points.forEach(q=>{q.press_us=1000;q.delay_us=Math.max(1,period-1000);});dirty();render();tell(`Requested ${cps} CPS per sequence before movement and USB limits. USB output will be measured during execution.`);});
+$('fast').onclick=action(()=>{state.fast=true;const cps=uint($('cps').value,1,500);const period=Math.round(1000000/cps);state.points.forEach(q=>{q.press_us=1000;q.delay_us=Math.max(1,period-1000);});dirty();render();tell(`Requested ${cps} CPS per sequence before movement and USB limits. USB output will be measured during execution.`);});
 $('save').onclick=action(save);$('load').onclick=action(async()=>{applyProfile(await api('profiles/'+$('slot').value));tell('Loaded the saved board profile.');});
 $('export').onclick=action(()=>{const p=validate(profile()),blob=new Blob([JSON.stringify(p,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='clicker-profile.json';a.click();URL.revokeObjectURL(url);});
 $('import').onchange=action(async event=>{const file=event.target.files[0];if(!file)return;if(file.size>196608)throw new Error('Profile file too large.');applyProfile(JSON.parse(await file.text()));dirty();tell('Imported. Save to the board before starting.');});

@@ -26,6 +26,8 @@ struct ScreenData {
   unsigned schedules = 0, point = 0;
   double cps = 0;
   bool running = false;
+  uint32_t animationMs = 0;
+  float history[24]{};
 };
 // Small fixed font and renderer shared by the firmware and host capture
 // fixture.
@@ -34,66 +36,90 @@ public:
   static constexpr int Width = 320, Height = 240;
   explicit Screen(uint16_t *pixels) : fb(pixels) {}
   void render(int page, const ScreenData &d) {
-    fill(0, 0, 320, 240, 0x0862);
-    fill(0, 0, 320, 30, 0x18e5);
-    text(10, 8, "S3 CLICKER", 2, 0xffff);
-    const char *titles[] = {"RUN", "CONNECTIONS", "SYSTEM", "SETUP / UPDATE"};
-    text(10, 40, titles[page % 4], 2, 0x4fbc);
+    constexpr uint16_t bg = 0x0843, card = 0x10a5, muted = 0x8495;
+    constexpr uint16_t cyan = 0x57ff, mint = 0x6ff3, white = 0xf7bf;
+    fill(0, 0, Width, Height, bg);
+    fill(12, 12, 3, 14, cyan);
+    text(23, 16, "S3 / PULSE", 2, white);
+    const char *titles[] = {"LIVE", "LINK", "SYSTEM", "SETUP"};
+    text(266, 18, titles[page % 4], 1, cyan);
     char b[96];
     if (page == 0) {
-      text(10, 66, d.profile, 2, 0xffff);
-      text(10, 91, d.running ? "RUNNING" : "STOPPED", 2,
-           d.running ? 0x67e9 : 0xfdaa);
-      snprintf(b, sizeof b, "%llu CLICKS", (unsigned long long)d.clicks);
-      text(10, 119, b, 2, 0xffff);
-      snprintf(b, sizeof b, "%s %.1f CPS", d.output, d.cps);
-      text(10, 145, b, 2, 0x4fbc);
-      snprintf(b, sizeof b, "REQUESTED %.1f CPS", d.requestedCps);
-      text(10, 161, b, 1, 0xffff);
-      snprintf(b, sizeof b, "%u SCHEDULES   POINT %u", d.schedules,
-               d.point + 1);
-      text(10, 176, b, 1, 0xffff);
-      snprintf(b, sizeof b, "LOOPS %lu   LATE %lu", (unsigned long)d.loops,
-               (unsigned long)d.late);
-      text(10, 193, b, 1, 0xffff);
+      fill(12, 40, 296, 104, card);
+      text(23, 50, d.running ? "LIVE OUTPUT" : "LAST RUN", 1, muted);
+      const double rate = d.cps < 0 ? 0 : d.cps > 999.9 ? 999.9 : d.cps;
+      snprintf(b, sizeof b, "%05.1f", rate);
+      bigNumber(22, 69, b, cyan);
+      text(240, 82, "CPS", 2, white);
+      text(240, 103, d.output, 1, muted);
+      fill(23, 124, 270, 3, 0x2949);
+      int width = d.requestedCps > 0 ? int(270 * rate / d.requestedCps) : 0;
+      fill(23, 124, width > 270 ? 270 : width, 3, mint);
+      if (d.running) {
+        int pulse = int(d.animationMs / 80 % 266);
+        fill(23 + pulse, 123, 5, 5, white);
+      }
+      fill(12, 153, 143, 41, card);
+      fill(164, 153, 144, 41, card);
+      text(22, 161, "CLICKS", 1, muted);
+      snprintf(b, sizeof b, "%llu", (unsigned long long)d.clicks);
+      text(22, 175, b, 2, white);
+      text(175, 161, "TARGET / LOOPS", 1, muted);
+      snprintf(b, sizeof b, "%u / %lu", d.point + 1, (unsigned long)d.loops);
+      text(175, 175, b, 2, white);
+      for (int i = 0; i < 24; ++i) {
+        double fraction = d.requestedCps > 0 ? d.history[i] / d.requestedCps : 0;
+        int height = int(12 * fraction);
+        height = height < 1 ? 1 : height > 12 ? 12 : height;
+        fill(13 + 5 * i, 211 - height, 3, height, d.running ? mint : 0x326d);
+      }
+      snprintf(b, sizeof b, "%.0f REQ / %u ACTIVE", d.requestedCps, d.schedules);
+      text(155, 201, b, 1, muted);
     } else if (page == 1) {
-      row(69, "MODE", d.network);
-      row(91, "SSID", d.ssid);
-      row(113, "IP", d.ip);
-      row(135, "USB", d.usb);
-      row(157, "BLE", d.ble);
-      row(179, "TAILNET", d.vpn);
-      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi);
-      text(10, 199, b, 1, 0xffff);
+      text(14, 43, "CONNECTIONS", 2, white);
+      row(69, "MODE", d.network); row(91, "SSID", d.ssid); row(113, "IP", d.ip);
+      row(135, "USB", d.usb); row(157, "BLE", d.ble); row(179, "TAILNET", d.vpn);
+      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi); text(14, 200, b, 1, muted);
     } else if (page == 2) {
-      row(69, "FIRMWARE", "0.2.0 / S3 N8R8");
-      snprintf(b, sizeof b, "%lu SEC", (unsigned long)d.uptime);
-      row(91, "UPTIME", b);
-      snprintf(b, sizeof b, "%lu B", (unsigned long)d.heap);
-      row(113, "HEAP", b);
-      snprintf(b, sizeof b, "%lu B", (unsigned long)d.psram);
-      row(135, "PSRAM", b);
-      snprintf(b, sizeof b, "%lu", (unsigned long)d.late);
-      row(157, "LATE", b);
-      row(179, "ERROR", d.error);
-      row(199, "RESET", d.reset);
+      text(14, 43, "SYSTEM HEALTH", 2, white);
+      row(69, "FIRMWARE", "0.3.0 / ESP32-S3");
+      snprintf(b, sizeof b, "%lu SEC", (unsigned long)d.uptime); row(91, "UPTIME", b);
+      snprintf(b, sizeof b, "%lu B", (unsigned long)d.heap); row(113, "HEAP", b);
+      snprintf(b, sizeof b, "%lu B", (unsigned long)d.psram); row(135, "PSRAM", b);
+      snprintf(b, sizeof b, "%lu", (unsigned long)d.late); row(157, "LATE", b);
+      row(179, "ERROR", d.error && *d.error ? d.error : "NONE"); row(200, "RESET", d.reset);
     } else {
-      text(10, 68, d.ssid, 1, 0xffff);
-      text(10, 86, d.password, 1, 0x4fbc);
-      text(10, 105, "SCAN TO JOIN", 1, 0xffff);
-      text(10, 123, "192.168.4.1", 1, 0xffff);
-      qr(d.qr, 200, 65);
-      text(10, 145, "TOKEN", 1, 0x4fbc);
-      text(10, 158, d.token, 1, 0xffff);
-      row(176, "UPDATE", d.ota);
-      text(10, 197, "HOLD BOOT 4 SEC FOR SETUP", 1, 0xffff);
+      text(14, 43, "SETUP / UPDATE", 2, white);
+      text(14, 69, d.ssid, 1, white); text(14, 87, d.password, 1, cyan);
+      text(14, 108, "SCAN TO JOIN", 1, muted); text(14, 126, "192.168.4.1", 1, white);
+      qr(d.qr, 205, 70);
+      text(14, 153, "CONTROLLER TOKEN", 1, muted); text(14, 166, d.token, 1, white);
+      row(188, "UPDATE", d.ota); text(14, 204, "HOLD BOOT 4S FOR SETUP", 1, muted);
     }
-    fill(0, 218, 320, 22, 0x18e5);
-    text(8, 225, "BOOT: CYCLE / HOLD 1S START / PRESS STOP", 1, 0xffff);
+    fill(0, 220, 320, 20, 0x10a5);
+    if (page == 0) {
+      fill(10, 226, 5, 5, d.running ? mint : muted);
+      text(23, 226, d.running ? "RUNNING" : "READY", 1, d.running ? mint : white);
+      text(86, 226, d.profile, 1, white);
+    } else text(12, 226, "BOOT / 1S START / PRESS STOP", 1, white);
   }
 
 private:
   uint16_t *fb;
+  // Crisp large numerals without a font asset or runtime allocation.
+  void bigNumber(int x, int y, const char *value, uint16_t color) {
+    static const uint8_t segments[] = {0x3f,0x06,0x5b,0x4f,0x66,0x6d,0x7d,0x07,0x7f,0x6f};
+    for (const char *p = value; *p; ++p) {
+      if (*p == '.') { fill(x + 1, y + 43, 6, 6, color); x += 12; continue; }
+      if (*p < '0' || *p > '9') continue;
+      uint8_t mask = segments[*p - '0'];
+      const int lines[7][4] = {{5,0,22,5},{27,5,5,18},{27,28,5,18},
+        {5,46,22,5},{0,28,5,18},{0,5,5,18},{5,23,22,5}};
+      for (int i = 0; i < 7; ++i)
+        fill(x + lines[i][0], y + lines[i][1], lines[i][2], lines[i][3], mask & (1 << i) ? color : 0x1927);
+      x += 39;
+    }
+  }
   void qr(const char *data, int x, int y) {
     if (!data || !*data)
       return;

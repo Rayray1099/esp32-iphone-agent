@@ -38,7 +38,7 @@ import UIKit
     @Published var otherWiFi: String?  // the phone is on this network, not the board's
     /// The character's mood during and right after a run; nil = resting (idle or sleeping, see `mood`).
     @Published var runMood: Mood?
-    @Published var tab = AppTab.agent
+    @Published var tab = AppTab.clicker
     /// Setup page to show (onboarding, or a Home status chip deep link); nil = hidden.
     @Published var setupPage: SetupPage?
     /// The review editor on screen (after a run, a recording, or editing an intent).

@@ -10,7 +10,7 @@ struct ClickTarget: Codable, Equatable, Identifiable {
 
 struct ClickProfile: Codable, Equatable {
     var schema = 1
-    var name = "My click sequence"
+    var name = "我的點擊腳本"
     var repeats = 0
     var landscape = false
     var fast = false
@@ -103,5 +103,38 @@ struct ClickProfile: Codable, Equatable {
             throw DeviceError(message: "Choose 1–16 profile slots from 0 to 31.")
         }
         _ = try await request("run/start", method: "POST", object: ["profiles": slots, "nonce": nonce])
+    }
+}
+
+struct ClickerRunStatus: Decodable {
+    var running = false
+    var releasing = false
+    var clicks: UInt64 = 0
+    var loops = 0, active = 0, point = 0, late = 0
+    var output_cps = 0.0, requested_cps = 0.0
+    var output = "usb"
+    var mouse_connected = false
+    var profile = ""
+    var network = "off"
+}
+
+struct SavedClickProfile: Decodable, Identifiable {
+    var id: Int
+    var name: String
+    var points: Int
+}
+
+extension ClickerClient {
+    func runStatus() async throws -> ClickerRunStatus {
+        let raw = try await request("run/status")
+        return try JSONDecoder().decode(ClickerRunStatus.self, from: Data(raw.utf8))
+    }
+    func savedProfiles() async throws -> [SavedClickProfile] {
+        var profiles: [SavedClickProfile] = []
+        for page in 0..<8 {
+            let raw = try await request("profiles/page/\(page)")
+            profiles += try JSONDecoder().decode([SavedClickProfile].self, from: Data(raw.utf8))
+        }
+        return profiles
     }
 }

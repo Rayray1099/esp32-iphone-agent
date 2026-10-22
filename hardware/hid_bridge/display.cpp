@@ -62,6 +62,8 @@ static String field(const String &json, const char *key) {
   return s;
 }
 static void renderTask(void *) {
+  float history[24]{};
+  uint32_t historyAt = 0;
   for (;;) {
     auto s = clicker_stats();
     String name = clicker_selected_name(), net = net_mode(), ip = net_ip(),
@@ -115,7 +117,14 @@ static void renderTask(void *) {
     d.uptime = millis() / 1000;
     double seconds = (s.lastClickUs - s.firstClickUs) / 1e6;
     d.cps = seconds > 0 ? (s.clicks - 1) / seconds : 0;
-    int page = s.running ? 0 : (millis() / 7000) % 4;
+    d.animationMs = millis();
+    if (millis() - historyAt >= 500) {
+      memmove(history, history + 1, sizeof(history) - sizeof(history[0]));
+      history[23] = s.running ? d.cps : 0;
+      historyAt = millis();
+    }
+    memcpy(d.history, history, sizeof(history));
+    int page = s.running || net == "off" ? 0 : (millis() / 7000) % 4;
     if (update != "idle")
       page = 3;
     if (page == 3)
@@ -125,7 +134,7 @@ static void renderTask(void *) {
     pushFrame();
     xSemaphoreGive(frameLock);
     renderStarted = true;
-    vTaskDelay(pdMS_TO_TICKS(s.running ? 1000 : 500));
+    vTaskDelay(pdMS_TO_TICKS(s.running && d.requestedCps > 75 ? 1000 : s.running ? 500 : 250));
   }
 }
 void display_begin() {

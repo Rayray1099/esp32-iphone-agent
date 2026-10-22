@@ -21,6 +21,15 @@ final class ClickerTests: XCTestCase {
         profile.schema = 2
         XCTAssertThrowsError(try profile.validate())
     }
+    func testCompactStatusAndTraditionalChineseResources() throws {
+        let raw = #"{"running":true,"releasing":false,"clicks":300,"loops":300,"active":1,"point":0,"late":0,"output_cps":43.7,"requested_cps":50,"output":"bluetooth","mouse_connected":true,"profile":"遊戲連點","network":"off"}"#
+        let status = try JSONDecoder().decode(ClickerRunStatus.self, from: Data(raw.utf8))
+        XCTAssertEqual(status.output_cps, 43.7)
+        XCTAssertTrue(status.mouse_connected)
+        XCTAssertEqual(status.profile, "遊戲連點")
+        let bundle = try XCTUnwrap(Bundle.main.path(forResource: "zh-Hant", ofType: "lproj"))
+        XCTAssertFalse(bundle.isEmpty)
+    }
     @MainActor func testTransferCRC() {
         XCTAssertEqual(ClickerClient.crc32(Data("123456789".utf8)), 0xcbf43926)
     }

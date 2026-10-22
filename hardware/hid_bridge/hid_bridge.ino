@@ -237,6 +237,11 @@ void startAirplay() {
 
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+  // The native USB port belongs to the phone during hardware testing. Keep the
+  // board's CH340/UART connector usable for the same local debug protocol.
+  Serial0.begin(115200);
+#endif
 #if DEBUG_SERIAL
   for (int i = 0; i < 30 && !Serial; i++) delay(100);  // give a serial monitor 3 s to catch the boot lines
 #endif
@@ -292,13 +297,23 @@ void loop() {
   linked = ble_connected();
 
   String line;
-  if (Serial.available()) {  // USB serial takes the same `<id> <command>` lines, for debugging from a Mac
-    line = Serial.readStringUntil('\n');
+  Stream *debug = Serial.available() ? static_cast<Stream *>(&Serial) : nullptr;
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (!debug && Serial0.available()) debug = &Serial0;
+#endif
+  if (debug) {
+    line = debug->readStringUntil('\n');
     line.trim();
-    if (line.startsWith("0 net ")) { int code; Serial.println("0 " + clicker_api("network", "PUT", line.substring(6), code)); return; }
+    // Physical serial only: never expose these credentials through BLE/status.
+    if (line == "0 localinfo") {
+      debug->println("0 {\"token\":\"" + controller_token() +
+                     "\",\"network\":" + net_json() + "}");
+      return;
+    }
+    if (line.startsWith("0 net ")) { int code; debug->println("0 " + clicker_api("network", "PUT", line.substring(6), code)); return; }
     int sp = line.indexOf(' ');
     String id = sp < 0 ? line : line.substring(0, sp);
-    Serial.println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));
+    debug->println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));
     return;
   }
   if (clicker_radios_off()) return;

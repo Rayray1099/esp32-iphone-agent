@@ -12,6 +12,7 @@ double clicker_requested_cps();
 String clicker_last_error();
 bool clicker_manual_begin();
 void clicker_manual_end(bool held);
+void clicker_link_lost();
 bool clicker_update_begin();
 void clicker_update_end();
 bool display_healthy();

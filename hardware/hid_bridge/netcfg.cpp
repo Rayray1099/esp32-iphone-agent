@@ -1,6 +1,7 @@
 #include "netcfg.h"
 #include <Preferences.h>
 #include <WiFi.h>
+#include <atomic>
 #include <cJSON.h>
 #include <esp_coexist.h>
 #include <esp_eap_client.h>
@@ -13,8 +14,13 @@ static Preferences prefs;
 static String apSsid, apPass, staSsid, staPass, mode, enterprise, pending,
     lastError;
 static SemaphoreHandle_t pendingLock = xSemaphoreCreateMutex();
+static SemaphoreHandle_t stateLock = xSemaphoreCreateRecursiveMutex();
+struct NetLock {
+  NetLock() { xSemaphoreTakeRecursive(stateLock, portMAX_DELAY); }
+  ~NetLock() { xSemaphoreGiveRecursive(stateLock); }
+};
 static uint32_t retryAt = 0, retryGap = 5000;
-static uint16_t disconnectReason = 0;
+static std::atomic<uint16_t> disconnectReason{0};
 static int coexPref = ESP_COEX_PREFER_BALANCE;
 static String str(cJSON *j, const char *k) {
   auto *v = cJSON_GetObjectItemCaseSensitive(j, k);
@@ -141,6 +147,7 @@ static void startWifi() {
   }
 }
 void net_begin(bool offline) {
+  NetLock lock;
   prefs.begin("agent", false);
   apSsid = prefs.getString("ap_ssid");
   apPass = prefs.getString("ap_pass");
@@ -215,6 +222,7 @@ String net_configure(const String &json) {
 }
 void net_request(const String &json) { net_configure(json); }
 void net_poll() {
+  NetLock lock;
   if ((mode == "sta" || mode == "apsta") && WiFi.status() != WL_CONNECTED &&
       (int32_t)(millis() - retryAt) >= 0) {
     WiFi.disconnect();
@@ -256,6 +264,7 @@ void net_poll() {
   startWifi();
 }
 String net_status_json() {
+  NetLock lock;
   auto *j = cJSON_CreateObject();
   cJSON_AddStringToObject(j, "mode", mode.c_str());
   cJSON_AddStringToObject(j, "ssid", (mode == "ap" ? apSsid : staSsid).c_str());
@@ -264,7 +273,7 @@ String net_status_json() {
       j, "ap_ip", mode == "off" ? "" : WiFi.softAPIP().toString().c_str());
   cJSON_AddNumberToObject(j, "rssi",
                           WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0);
-  cJSON_AddNumberToObject(j, "disconnect_reason", disconnectReason);
+  cJSON_AddNumberToObject(j, "disconnect_reason", disconnectReason.load());
   cJSON_AddBoolToObject(j, "enterprise", enterprise.length() > 0);
   cJSON_AddStringToObject(j, "error", lastError.c_str());
   cJSON_AddBoolToObject(j, "clock_valid", time(nullptr) >= 1735689600);
@@ -273,6 +282,7 @@ String net_status_json() {
   return out;
 }
 String net_json() {
+  NetLock lock;
   auto *j = cJSON_Parse(net_status_json().c_str());
   if (mode == "ap" || mode == "apsta") {
     cJSON_DeleteItemFromObject(j, "ssid");
@@ -283,27 +293,41 @@ String net_json() {
   cJSON_Delete(j);
   return out;
 }
-String net_ap_ssid() { return apSsid; }
-String net_ap_password() { return apPass; }
+String net_ap_ssid() {
+  NetLock lock;
+  return apSsid;
+}
+String net_ap_password() {
+  NetLock lock;
+  return apPass;
+}
 const char *net_mode() {
+  NetLock lock;
   if (mode == "sta" && WiFi.status() != WL_CONNECTED)
     return "none";
-  return mode.c_str();
+  return mode == "ap"      ? "ap"
+         : mode == "sta"   ? "sta"
+         : mode == "apsta" ? "apsta"
+                           : "off";
 }
 String net_ip() {
+  NetLock lock;
   if (WiFi.status() == WL_CONNECTED)
     return WiFi.localIP().toString();
   return mode == "off" ? "" : WiFi.softAPIP().toString();
 }
 int net_peers() {
+  NetLock lock;
   return (mode == "off" ? 0 : WiFi.softAPgetStationNum()) +
          (WiFi.status() == WL_CONNECTED ? 1 : 0);
 }
 bool net_up() {
+  NetLock lock;
   return mode != "off" && (mode != "sta" || WiFi.status() == WL_CONNECTED);
 }
 static const char *coexNames[] = {"wifi", "bt", "balance"};
 bool net_coex(const String &pref) {
+  NetLock lock;
   for (int i = 0; i < 3; i++)
     if (pref == coexNames[i] &&
         esp_coex_preference_set((esp_coex_prefer_t)i) == ESP_OK) {
@@ -312,16 +336,33 @@ bool net_coex(const String &pref) {
     }
   return false;
 }
-const char *net_coex_mode() { return coexNames[coexPref]; }
-uint16_t cfg_width() { return prefs.getUShort("w", 480); }
-uint16_t cfg_height() { return prefs.getUShort("h", 1040); }
-uint8_t cfg_fps() { return prefs.getUChar("fps", 5); }
+const char *net_coex_mode() {
+  NetLock lock;
+  return coexNames[coexPref];
+}
+uint16_t cfg_width() {
+  NetLock lock;
+  return prefs.getUShort("w", 480);
+}
+uint16_t cfg_height() {
+  NetLock lock;
+  return prefs.getUShort("h", 1040);
+}
+uint8_t cfg_fps() {
+  NetLock lock;
+  return prefs.getUChar("fps", 5);
+}
 void cfg_set_res(uint16_t w, uint16_t h) {
+  NetLock lock;
   prefs.putUShort("w", w);
   prefs.putUShort("h", h);
 }
-void cfg_set_fps(uint8_t fps) { prefs.putUChar("fps", fps); }
+void cfg_set_fps(uint8_t fps) {
+  NetLock lock;
+  prefs.putUChar("fps", fps);
+}
 void cfg_ed25519_seed(uint8_t seed[32]) {
+  NetLock lock;
   if (prefs.getBytes("ed_seed", seed, 32) == 32)
     return;
   esp_fill_random(seed, 32);

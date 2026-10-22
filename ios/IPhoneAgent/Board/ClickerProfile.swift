@@ -14,10 +14,13 @@ struct ClickProfile: Codable, Equatable {
     var repeats = 0
     var landscape = false
     var fast = false
+    var device: String? = "default" // absent in older exported profiles
     var points = [ClickTarget()]
 
     func validate() throws {
-        guard !name.isEmpty, name.utf8.count <= 48, (1...1000).contains(points.count),
+        let deviceID = device ?? "default"
+        guard !deviceID.isEmpty, deviceID.utf8.count <= 32, deviceID.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }),
+              schema == 1, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.utf8.count <= 48, (1...1000).contains(points.count),
               (0...1_000_000_000).contains(repeats), points.contains(where: { $0.enabled }),
               points.allSatisfy({ (0...10000).contains($0.x) && (0...10000).contains($0.y) &&
                   (1...3_600_000_000).contains($0.press_us) && (1...3_600_000_000).contains($0.delay_us) })
@@ -66,6 +69,9 @@ struct ClickProfile: Codable, Equatable {
     }
 
     func load(slot: Int) async throws -> ClickProfile {
+        let mtu = channel.transport?.maxWrite ?? 0
+        guard mtu >= 200 else { throw DeviceError(message: "Wait for BLE MTU negotiation, or use the hotspot controller.") }
+        let limit = min(192, (mtu - 64) / 4 * 3)
         let id = UUID().uuidString
         let reply = try await request("transfer/read", method: "POST", object: ["id": id, "path": "profiles/\(slot)"])
         guard let metadata = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
@@ -73,7 +79,7 @@ struct ClickProfile: Codable, Equatable {
               let crc = metadata["crc32"] as? NSNumber else { throw DeviceError(message: "Invalid board transfer metadata.") }
         var data = Data()
         while data.count < count {
-            let raw = try await request("transfer/read-chunk", method: "POST", object: ["id": id, "offset": data.count])
+            let raw = try await request("transfer/read-chunk", method: "POST", object: ["id": id, "offset": data.count, "limit": limit])
             guard let object = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
                   let encoded = object["data"] as? String, let chunk = Data(base64Encoded: encoded),
                   !chunk.isEmpty, data.count + chunk.count <= count else { throw DeviceError(message: "Interrupted board download.") }

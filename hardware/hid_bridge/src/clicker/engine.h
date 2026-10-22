@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace clicker {
 constexpr size_t MaxProfiles = 32, MaxPoints = 1000, MaxSchedules = 16;
@@ -19,6 +20,7 @@ struct Profile {
   uint32_t repeats = 0; // 0 = forever, 1 = once
   bool landscape = false, fast = false;
   Point points[MaxPoints];
+  char device[33] = "default"; // calibration identity, independent of orientation
 };
 struct Calibration {
   int32_t spanX = 0,
@@ -45,7 +47,8 @@ struct Stats {
   bool running = false, releasing = false;
 };
 inline bool valid(const Profile &p) {
-  if (!p.count || p.count > MaxPoints)
+  if (!p.count || p.count > MaxPoints || !std::memchr(p.name, 0, sizeof p.name) ||
+      !std::memchr(p.device, 0, sizeof p.device))
     return false;
   bool enabled = false;
   for (size_t i = 0; i < p.count; ++i) {
@@ -73,7 +76,8 @@ public:
       return false;
     for (size_t i = 0; i < count; ++i)
       if (!profiles[i] || !valid(*profiles[i]) ||
-          profiles[i]->landscape != calibration.landscape)
+          profiles[i]->landscape != calibration.landscape ||
+          (i && std::strcmp(profiles[0]->device, profiles[i]->device)))
         return false;
     cal = calibration;
     s = {};
@@ -110,7 +114,9 @@ public:
     }
     return true;
   }
-  void stop() {
+  void stop(bool forceRelease = false) {
+    if (!s.running && !s.releasing && !held && !forceRelease)
+      return;
     s.running = false;
     s.active = 0;
     s.releasing = true;

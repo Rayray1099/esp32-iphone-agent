@@ -6,7 +6,7 @@ OUT=ROOT/'output/host'
 OUT.mkdir(parents=True,exist_ok=True)
 compiler=shutil.which('clang++') or shutil.which('g++')
 if not compiler:raise SystemExit('Install clang++ or g++')
-for name in ['clicker_test','screen_capture']:
+for name in ['clicker_test','integrity_test','screen_capture']:
     exe=OUT/(name+('.exe' if __import__('os').name=='nt' else ''))
     sources=[str(ROOT/f'hardware/tests/{name}.cpp')]
     if name=='screen_capture':

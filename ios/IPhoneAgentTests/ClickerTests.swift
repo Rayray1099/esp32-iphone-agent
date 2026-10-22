@@ -15,6 +15,11 @@ final class ClickerTests: XCTestCase {
         XCTAssertThrowsError(try profile.validate())
         profile.points = [ClickTarget(enabled: false)]
         XCTAssertThrowsError(try profile.validate())
+        profile = ClickProfile();profile.device = "../bad"
+        XCTAssertThrowsError(try profile.validate())
+        profile.device = "my-ipad";try profile.validate()
+        profile.schema = 2
+        XCTAssertThrowsError(try profile.validate())
     }
     @MainActor func testTransferCRC() {
         XCTAssertEqual(ClickerClient.crc32(Data("123456789".utf8)), 0xcbf43926)

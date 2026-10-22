@@ -6,6 +6,8 @@
 #include "clicker/screen.h"
 #include <cassert>
 #include <cstdio>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -28,7 +30,39 @@ public:
   }
 };
 } // namespace
+// Host stages two valid images and OTA metadata. QEMU S3 does not emulate
+// every flash-MMU path needed by esp_image_verify in an application task.
+static void otaLifecycle() {
+  const auto *fixture = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "profiles");
+  uint8_t scenario = 0xff;
+  ESP_ERROR_CHECK(esp_partition_read(fixture, 0, &scenario, 1));
+  const auto *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  ESP_ERROR_CHECK(esp_ota_get_state_partition(running, &state));
+  if (scenario == 1) {
+    assert(running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1);
+    assert(state == ESP_OTA_IMG_PENDING_VERIFY);
+    ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
+    ESP_ERROR_CHECK(esp_ota_get_state_partition(running, &state));
+    assert(state == ESP_OTA_IMG_VALID);
+    printf("EMULATOR OTA: startup confirmation PASS\n");
+  } else if (scenario == 2) {
+    if (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) {
+      assert(state == ESP_OTA_IMG_PENDING_VERIFY);
+      printf("EMULATOR OTA: deliberately restarting without confirmation\n");
+      fflush(stdout);
+      esp_restart();
+    }
+    assert(running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+           state == ESP_OTA_IMG_VALID);
+    printf("EMULATOR OTA: failed-boot rollback PASS\n");
+  } else {
+    assert(false && "Missing host OTA fixture");
+  }
+}
 extern "C" void app_main() {
+  otaLifecycle();
   printf("EMULATOR: S3 CPU, actual FreeRTOS and shared core; simulated "
          "USB/BLE/Wi-Fi/TFT adapters\n");
   auto before = esp_timer_get_time();

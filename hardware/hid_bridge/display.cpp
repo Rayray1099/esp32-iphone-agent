@@ -4,6 +4,7 @@
 #include "src/clicker/screen.h"
 #include <SPI.h>
 #include <WiFi.h>
+#include <atomic>
 #include <cJSON.h>
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
@@ -13,6 +14,7 @@ extern const char *resetReason();
 static uint16_t *framebuffer;
 static uint32_t sentRows[240]{};
 static bool firstFrame = true;
+static std::atomic<bool> renderStarted{false};
 static SemaphoreHandle_t frameLock;
 static SPIClass lcd(FSPI);
 static void command(uint8_t c, const uint8_t *p = nullptr, size_t n = 0) {
@@ -67,6 +69,15 @@ static void renderTask(void *) {
            token = controller_token();
     String remote = remote_status(), vpn = field(remote, "ip"),
            ota = ota_status(), update = field(ota, "state");
+    auto *otaJson = cJSON_Parse(ota.c_str());
+    auto *written = cJSON_GetObjectItemCaseSensitive(otaJson, "written");
+    auto *total = cJSON_GetObjectItemCaseSensitive(otaJson, "total");
+    if (cJSON_IsNumber(written) && cJSON_IsNumber(total) &&
+        total->valuedouble > 0)
+      update += " " +
+                String(int(100 * written->valuedouble / total->valuedouble)) +
+                "%";
+    cJSON_Delete(otaJson);
     String error = clicker_last_error(), networkStatus = net_status_json();
     String networkError = field(networkStatus, "error");
     if (networkError.length())
@@ -81,7 +92,8 @@ static void renderTask(void *) {
             : ble_connected()    ? "CONNECTED"
                                  : "ADVERTISING";
     d.vpn = vpn.c_str();
-    d.ssid = ssid.c_str();
+    String connectedSsid = field(networkStatus, "ssid");
+    d.ssid = connectedSsid.c_str();
     d.password = pass.c_str();
     d.token = token.c_str();
     d.ota = update.c_str();
@@ -103,10 +115,15 @@ static void renderTask(void *) {
         s.startedUs ? (esp_timer_get_time() - s.startedUs) / 1e6 : 0;
     d.cps = seconds > 0 ? s.clicks / seconds : 0;
     int page = s.running ? 0 : (millis() / 7000) % 4;
+    if (update != "idle")
+      page = 3;
+    if (page == 3)
+      d.ssid = ssid.c_str();
     xSemaphoreTake(frameLock, portMAX_DELAY);
     clicker::Screen(framebuffer).render(page, d);
     pushFrame();
     xSemaphoreGive(frameLock);
+    renderStarted = true;
     vTaskDelay(pdMS_TO_TICKS(s.running ? 1000 : 500));
   }
 }
@@ -116,6 +133,8 @@ void display_begin() {
   if (!framebuffer)
     return;
   frameLock = xSemaphoreCreateMutex();
+  if (!frameLock)
+    return;
   pinMode(16, OUTPUT);
   digitalWrite(16, HIGH);
   pinMode(15, OUTPUT);
@@ -144,7 +163,7 @@ void display_begin() {
   xTaskCreatePinnedToCore(renderTask, "tft", 8192, nullptr, 1, nullptr, 0);
 }
 void display_poll() {}
-bool display_healthy() { return framebuffer && frameLock; }
+bool display_healthy() { return framebuffer && frameLock && renderStarted; }
 bool display_bmp(void *request) {
   auto *r = (httpd_req_t *)request;
   if (!framebuffer) {

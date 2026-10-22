@@ -2,6 +2,7 @@
 #include "ble_link.h"
 #include "netcfg.h"
 #include "src/clicker/button.h"
+#include "src/clicker/integrity.h"
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <USBHID.h>
@@ -16,6 +17,17 @@
 #include <sodium.h>
 #include <tusb.h>
 extern String run(const String &);
+extern void clearManualInputState();
+extern "C" void __real_cJSON_InitHooks(cJSON_Hooks *);
+extern "C" void __wrap_cJSON_InitHooks(cJSON_Hooks *hooks) {
+  // Installed during startup before any service tasks. MicroLink must not
+  // mutate cJSON's process-global allocator while other tasks parse JSON.
+  static bool installed = false;
+  if (!installed) {
+    __real_cJSON_InitHooks(hooks);
+    installed = true;
+  }
+}
 using namespace clicker;
 static std::atomic<bool> usbCompleted{false};
 static TaskHandle_t clickerTask = nullptr;
@@ -128,17 +140,16 @@ bool number(cJSON *j, const char *key, uint32_t lo, uint32_t hi, uint32_t &out,
   out = uint32_t(v->valuedouble);
   return true;
 }
-uint32_t crc32(const void *data, size_t n) {
-  uint32_t c = ~0u;
-  auto *p = (const uint8_t *)data;
-  while (n--) {
-    c ^= *p++;
-    for (int b = 0; b < 8; ++b)
-      c = (c >> 1) ^ (0xedb88320u & uint32_t(-int32_t(c & 1)));
-  }
-  return ~c;
-}
 String filename(int id) { return "/p" + String(id) + ".bin"; }
+bool validDevice(const String &id) {
+  if (id.isEmpty() || id.length() > 32)
+    return false;
+  for (size_t i = 0; i < id.length(); ++i)
+    if (!isalnum(static_cast<unsigned char>(id[i])) && id[i] != '-' &&
+        id[i] != '_')
+      return false;
+  return true;
+}
 // Versioned records with CRC; commit is one LittleFS rename, never a partially
 // overwritten profile.
 bool store(int id, const Profile &p) {
@@ -146,8 +157,8 @@ bool store(int id, const Profile &p) {
   auto f = LittleFS.open(tmp, "w");
   if (!f)
     return false;
-  uint32_t header[] = {0x32504353, 1, sizeof(Profile), crc32(&p, sizeof p)};
-  bool ok = f.write((uint8_t *)header, sizeof header) == sizeof header &&
+  auto header = recordHeader(&p, sizeof p);
+  bool ok = f.write((uint8_t *)&header, sizeof header) == sizeof header &&
             f.write((const uint8_t *)&p, sizeof p) == sizeof p;
   f.flush();
   f.close();
@@ -161,12 +172,13 @@ bool load(int id, Profile &p) {
   auto f = LittleFS.open(filename(id), "r");
   if (!f)
     return false;
-  uint32_t h[4];
-  return f.size() == sizeof(h) + sizeof(p) &&
-         f.read((uint8_t *)h, sizeof h) == sizeof h && h[0] == 0x32504353 &&
-         h[1] == 1 && h[2] == sizeof p &&
-         f.read((uint8_t *)&p, sizeof p) == sizeof p &&
-         h[3] == crc32(&p, sizeof p) && valid(p);
+  RecordHeader h;
+  if (f.read((uint8_t *)&h, sizeof h) != sizeof h ||
+      (h.size != sizeof p && h.size != offsetof(Profile, device)))
+    return false;
+  strlcpy(p.device, "default", sizeof p.device);
+  return f.read((uint8_t *)&p, h.size) == h.size &&
+         validRecord(h, f.size(), &p, h.size) && valid(p);
 }
 Profile *allocProfile() {
   void *p =
@@ -178,6 +190,10 @@ bool decodeProfile(cJSON *j, Profile &p) {
   if (!cJSON_IsObject(j) || !number(j, "schema", 1, 1, schema, 1))
     return false;
   String name = field(j, "name");
+  String device = field(j, "device", "default");
+  if (!validDevice(device))
+    return false;
+  strlcpy(p.device, device.c_str(), sizeof p.device);
   if (name.isEmpty() || name.length() > 48)
     return false;
   p.count = 0;
@@ -211,6 +227,7 @@ bool decodeProfile(cJSON *j, Profile &p) {
 String encodeProfile(const Profile &p) {
   JSON j(cJSON_CreateObject(), cJSON_Delete);
   cJSON_AddStringToObject(j.get(), "name", p.name);
+  cJSON_AddStringToObject(j.get(), "device", p.device);
   cJSON_AddNumberToObject(j.get(), "schema", 1);
   cJSON_AddNumberToObject(j.get(), "repeats", p.repeats);
   cJSON_AddBoolToObject(j.get(), "landscape", p.landscape);
@@ -234,11 +251,21 @@ void releaseProfiles() {
     p = nullptr;
   }
 }
-Calibration calibration(bool landscape) {
+Calibration calibration(bool landscape, const String &device = "default") {
   Calibration c;
-  const char *k = landscape ? "land" : "port";
-  if (prefs.getBytesLength(k) == sizeof c)
-    prefs.getBytes(k, &c, sizeof c);
+  String path = "/cal-" + device + (landscape ? "-land" : "-port");
+  auto f = LittleFS.open(path, "r");
+  RecordHeader header;
+  if (f && f.read((uint8_t *)&header, sizeof header) == sizeof header &&
+      f.read((uint8_t *)&c, sizeof c) == sizeof c &&
+      validRecord(header, f.size(), &c, sizeof c))
+    return c;
+  c = {};
+  if (device == "default") {
+    const char *k = landscape ? "land" : "port";
+    if (prefs.getBytesLength(k) == sizeof c)
+      prefs.getBytes(k, &c, sizeof c);
+  }
   return c;
 }
 String start(cJSON *j) {
@@ -269,7 +296,7 @@ String start(cJSON *j) {
     }
   }
   if (ok) {
-    auto c = calibration(live[0]->landscape);
+    auto c = calibration(live[0]->landscape, live[0]->device);
     ok = engine.start((const Profile *const *)live, n, c, esp_timer_get_time());
     if (ok) {
       requestedCps = 0;
@@ -334,6 +361,7 @@ void worker(void *) {
       prefs.putUChar("selected", selection);
     }
     if (action == ButtonAction::Start) {
+      APILock apiLock;
       auto j = parse("{\"nonce\":\"button-" + String(millis()) +
                      "\",\"profiles\":" + selectedGroup + "}");
       lastError = start(j.get());
@@ -378,9 +406,12 @@ void clicker_begin() {
     const esp_partition_t *p = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "profiles");
     uint8_t sample[256]{};
-    bool blank = p && esp_partition_read(p, 0, sample, sizeof sample) == ESP_OK;
-    for (auto b : sample)
-      blank = blank && b == 0xff;
+    bool blank = p != nullptr;
+    for (size_t at = 0; blank && at < p->size; at += sizeof sample) {
+      blank = esp_partition_read(p, at, sample, sizeof sample) == ESP_OK;
+      for (auto b : sample)
+        blank = blank && b == 0xff;
+    }
     if (blank && LittleFS.format())
       ready = LittleFS.begin(false, "/littlefs", 10, "profiles");
   }
@@ -447,6 +478,17 @@ void clicker_manual_end(bool held) {
   manualHeld = held;
   xSemaphoreGive(guard);
 }
+void clicker_link_lost() {
+  xSemaphoreTake(guard, portMAX_DELAY);
+  aiLease = false;
+  if (!engine.stats().running && !engine.stats().releasing) {
+    manualHeld = false;
+    engine.stop(true);
+  }
+  xSemaphoreGive(guard);
+  if (clickerTask)
+    xTaskNotifyGive(clickerTask);
+}
 bool clicker_update_begin() {
   APILock lock;
   xSemaphoreTake(guard, portMAX_DELAY);
@@ -468,10 +510,26 @@ void clicker_update_end() {
   xSemaphoreGive(guard);
 }
 bool clicker_stop_wait() {
-  stopRequested = true;
+  // Publish directly under the engine lock, without waiting for the API lock
+  // in the worker's BOOT handler. The worker then drains the USB release.
+  xSemaphoreTake(guard, portMAX_DELAY);
+  if (manualBusy) {
+    xSemaphoreGive(guard);
+    return false;
+  }
+  engine.stop(manualHeld);
+  xSemaphoreGive(guard);
+  if (clickerTask)
+    xTaskNotifyGive(clickerTask);
   for (int i = 0; i < 100; ++i) {
-    if (!stopRequested.load() && !clicker_busy())
+    xSemaphoreTake(guard, portMAX_DELAY);
+    engine.tick(esp_timer_get_time());
+    xSemaphoreGive(guard);
+    if (!clicker_busy()) {
+      clearManualInputState();
+      manualHeld = false;
       return true;
+    }
     delay(2);
   }
   return false;
@@ -521,6 +579,17 @@ String clicker_api(const String &path, const String &method, const String &body,
     return "{\"error\":\"Restart pending\"}";
   }
   auto j = parse(body);
+  const bool readOnly = path == "capabilities" || path == "status" ||
+                        path == "logs" || path == "system/tasks";
+  const bool readWrite = path == "network" || path == "tailscale" ||
+                         path == "calibration" || path == "run/selection";
+  if ((readOnly && method != "GET") ||
+      (readWrite && method != "GET" && method != "PUT") ||
+      (path.startsWith("profiles/") && method != "GET" && method != "PUT" &&
+       method != "DELETE")) {
+    code = 400;
+    return "{\"error\":\"Unsupported method\"}";
+  }
   if (path == "capabilities")
     return "{\"api\":1,\"board\":\"s3-n8r8-st7789\",\"profiles\":32,\"points\":"
            "1000,\"schedules\":16,\"timing_us\":1,\"usb_poll_us\":1000,"
@@ -590,7 +659,9 @@ String clicker_api(const String &path, const String &method, const String &body,
     result = j ? start(j.get()) : "err invalid JSON";
   else if (path == "pointer" && method == "POST") {
     String cmd = field(j.get(), "command");
-    if (cmd != "home" && !cmd.startsWith("move "))
+    if (aiLease)
+      result = "err AI owns USB input";
+    else if (cmd != "home" && !cmd.startsWith("move "))
       result = "err only home and move allowed";
     else
       result = run(cmd);
@@ -612,6 +683,37 @@ String clicker_api(const String &path, const String &method, const String &body,
     if (method == "GET")
       return remote_status();
     result = remote_configure(body);
+  } else if (path == "run/selection") {
+    if (method == "GET")
+      return "{\"profiles\":" + selectedGroup + "}";
+    auto *ids = cJSON_GetObjectItemCaseSensitive(j.get(), "profiles");
+    int n = cJSON_GetArraySize(ids);
+    bool ok = !clicker_busy() && cJSON_IsArray(ids) && n >= 1 && n <= 16;
+    auto *p = allocProfile();
+    bool land = false;
+    String name;
+    for (int i = 0; ok && i < n; ++i) {
+      auto *id = cJSON_GetArrayItem(ids, i);
+      ok = p && cJSON_IsNumber(id) && id->valuedouble == id->valueint &&
+           id->valueint >= 0 && id->valueint < 32 && load(id->valueint, *p);
+      if (ok && i == 0) {
+        land = p->landscape;
+        name = p->name;
+      } else if (ok && p->landscape != land)
+        ok = false;
+    }
+    free(p);
+    if (!ok)
+      result = "err choose 1-16 saved profiles of the same orientation while "
+               "stopped";
+    else {
+      selectedGroup = jsonText(ids);
+      selection = cJSON_GetArrayItem(ids, 0)->valueint;
+      selectedName = name;
+      prefs.putString("group", selectedGroup);
+      prefs.putUChar("selected", selection);
+      result = "ok";
+    }
   } else if (path == "mode/offline" && method == "POST") {
     if (!clicker_stop_wait())
       result = "err USB release pending";
@@ -625,7 +727,12 @@ String clicker_api(const String &path, const String &method, const String &body,
     result = "ok";
   } else if (path == "calibration") {
     bool land = j && jsonBool(j.get(), "landscape");
-    Calibration c = calibration(land);
+    String device = field(j.get(), "device", "default");
+    if (!validDevice(device)) {
+      code = 400;
+      return "{\"error\":\"Invalid calibration device ID\"}";
+    }
+    Calibration c = calibration(land, device);
     if (method != "GET") {
       uint32_t x, y, interval, loops;
       if (clicker_busy() || !j || !number(j.get(), "span_x", 1, 32000, x, 0) ||
@@ -639,8 +746,16 @@ String clicker_api(const String &path, const String &method, const String &body,
         c.moveIntervalUs = interval;
         c.rehomeLoops = loops;
         c.landscape = land;
-        prefs.putBytes(land ? "land" : "port", &c, sizeof c);
-        result = "ok";
+        String path = "/cal-" + device + (land ? "-land" : "-port");
+        auto f = LittleFS.open(path + ".tmp", "w");
+        auto h = recordHeader(&c, sizeof c);
+        bool ok = f && f.write((uint8_t *)&h, sizeof h) == sizeof h &&
+                  f.write((uint8_t *)&c, sizeof c) == sizeof c;
+        f.flush();
+        f.close();
+        result = ok && LittleFS.rename(path + ".tmp", path)
+                     ? "ok"
+                     : "err calibration storage failed";
       }
     } else
       return "{\"span_x\":" + String(c.spanX) +
@@ -724,13 +839,14 @@ String clicker_api(const String &path, const String &method, const String &body,
       }
     }
   } else if (path == "transfer/read-chunk" && method == "POST") {
-    uint32_t offset;
+    uint32_t offset, limit;
     if (!upload.bytes || !upload.reading || field(j.get(), "id") != upload.id ||
-        !number(j.get(), "offset", 0, upload.size, offset, UINT32_MAX))
+        !number(j.get(), "offset", 0, upload.size, offset, UINT32_MAX) ||
+        !number(j.get(), "limit", 1, 192, limit, 192))
       result = "err invalid read offset";
     else {
       char encoded[257];
-      size_t written = 0, n = std::min<size_t>(192, upload.size - offset);
+      size_t written = 0, n = std::min<size_t>(limit, upload.size - offset);
       if (n)
         mbedtls_base64_encode((uint8_t *)encoded, sizeof encoded, &written,
                               upload.bytes + offset, n);
@@ -741,11 +857,16 @@ String clicker_api(const String &path, const String &method, const String &body,
   } else if (path == "transfer/begin" && method == "POST") {
     uint32_t size, crc;
     String id = field(j.get(), "id"), kind = field(j.get(), "path");
-    if (!j || id.length() < 8 || id.length() > 48 ||
-        !number(j.get(), "size", 1, 196608, size, 0) || !size ||
-        !number(j.get(), "crc32", 0, UINT32_MAX, crc, 0) ||
-        !(kind.startsWith("profiles/") || kind == "network" ||
-          kind == "calibration" || kind == "tailscale"))
+    bool committed = false;
+    for (const auto &previous : committedTransfers)
+      committed |= id.length() && id == previous;
+    if (committed)
+      result = "err transfer ID already committed; use a fresh ID";
+    else if (!j || id.length() < 8 || id.length() > 48 ||
+             !number(j.get(), "size", 1, 196608, size, 0) || !size ||
+             !number(j.get(), "crc32", 0, UINT32_MAX, crc, 0) ||
+             !(kind.startsWith("profiles/") || kind == "network" ||
+               kind == "calibration" || kind == "tailscale"))
       result = "err invalid transfer";
     else if (upload.id == id && upload.kind == kind && upload.size == size &&
              upload.crc == crc)
@@ -776,15 +897,11 @@ String clicker_api(const String &path, const String &method, const String &body,
                               (const uint8_t *)b64.c_str(), b64.length()) ||
         !got || off + got > upload.size)
       result = "err invalid chunk";
-    else if (off == upload.used) {
-      memcpy(upload.bytes + off, data, got);
-      upload.used += got;
+    else if (appendChunk(upload.bytes, upload.size, upload.used, off, data,
+                         got)) {
       upload.touched = millis();
       return "{\"offset\":" + String(upload.used) + "}";
-    } else if (off + got <= upload.used &&
-               !memcmp(upload.bytes + off, data, got))
-      return "{\"offset\":" + String(upload.used) + "}";
-    else
+    } else
       result = "err out of order or conflicting retry";
   } else if (path == "transfer/commit" && method == "POST") {
     String id = field(j.get(), "id");

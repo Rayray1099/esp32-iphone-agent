@@ -107,6 +107,7 @@ extension AppModel {
         try? await Task.sleep(nanoseconds: 100_000_000)  // let a gesture in flight finish its own release
         if board.connected && !MockMode.on {
             do { try await pointer.reset() } catch { say("release failed: \(error.localizedDescription)") }
+            _ = try? await board.commands.send("v1 POST input/release {}")
         }
     }
 

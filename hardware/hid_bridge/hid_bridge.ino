@@ -30,9 +30,18 @@ const int HOME_REPORTS = 50;
 
 const int WATCHDOG_MS = 8000;  // a hung loop (e.g. blocked USB) reboots the board instead of staying offline
 
-USBHIDMouse mouse;
+class BridgeMouse : public USBHIDMouse {
+public:
+  void clearState() { _buttons = 0; }
+};
+BridgeMouse mouse;
 USBHIDKeyboard keyboard;
 USBHIDConsumerControl consumer;
+void clearManualInputState() {
+  mouse.clearState();
+  keyboard.releaseAll();
+  consumer.release();
+}
 const uint16_t AC_HOME = 0x0223;  // HID consumer page: AC Home
 static String receiverName = "ESP32 Agent";
 
@@ -276,6 +285,7 @@ void loop() {
   display_poll();
   if (!clicker_radios_off()) remote_poll();
   if (linked && !ble_connected()) {
+    clicker_link_lost();
     if (!clicker_busy()) { mouse.release(MOUSE_LEFT); keyboard.releaseAll(); }
     video_stream(false);
   }
@@ -285,7 +295,7 @@ void loop() {
   if (Serial.available()) {  // USB serial takes the same `<id> <command>` lines, for debugging from a Mac
     line = Serial.readStringUntil('\n');
     line.trim();
-    if (line.startsWith("0 net ")) { net_request(line.substring(6)); Serial.println("0 ok"); return; }
+    if (line.startsWith("0 net ")) { int code; Serial.println("0 " + clicker_api("network", "PUT", line.substring(6), code)); return; }
     int sp = line.indexOf(' ');
     String id = sp < 0 ? line : line.substring(0, sp);
     Serial.println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));

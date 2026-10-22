@@ -38,6 +38,7 @@ struct ClickerView: View {
                     GroupBox("Saved profile") {
                         VStack(spacing: 12) {
                             TextField("Profile name", text: $profile.name).textFieldStyle(.roundedBorder)
+                            TextField("Device calibration ID", text: Binding(get: { profile.device ?? "default" }, set: { profile.device = $0 })).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
                             Picker("Slot", selection: $slot) { ForEach(0..<32) { Text("Slot \($0)").tag($0) } }
                             Toggle("Landscape", isOn: $profile.landscape)
                             number("Repeats (0 = forever)", value: $profile.repeats)
@@ -50,7 +51,7 @@ struct ClickerView: View {
                         }.padding(8)
                     }
                     GroupBox("Targets and microsecond timing") {
-                        VStack(spacing: 12) {
+                        LazyVStack(spacing: 12) {
                             number("Delay for all (µs)", value: $bulkDelay)
                             Button("Apply to all targets") { for i in profile.points.indices { profile.points[i].delay_us = bulkDelay } }
                             number("Requested repeat CPS", value: $requestedCPS)
@@ -84,12 +85,13 @@ struct ClickerView: View {
                         VStack(spacing: 14) {
                             TextField("Concurrent slots: 0,1,2", text: $schedules).textFieldStyle(.roundedBorder)
                             Button("Start saved profiles") { perform {
-                                let ids = schedules.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-                                guard ids.count == schedules.split(separator: ",").count else { throw DeviceError(message: "Enter comma separated slot numbers.") }
+                                let ids = try scheduleIDs()
                                 try await client.start(slots: ids); message = "Running from board memory. BOOT stops the clicker."
                             } }.buttonStyle(.borderedProminent)
                             Button("Stop", role: .destructive) { perform { _ = try await client.request("run/stop", method: "POST"); message = "Stop requested." } }.buttonStyle(.bordered)
                             Button("Switch board to offline mode") { perform {
+                                let ids = try scheduleIDs()
+                                _ = try await client.request("run/selection", method: "PUT", object: ["profiles": ids])
                                 _ = try await client.request("mode/offline", method: "POST");message = "Board restarting with both radios off. Hold BOOT 1s to start; hold 4s while idle for setup."
                             } }
                         }.padding(8)
@@ -157,7 +159,7 @@ struct ClickerView: View {
                 TextField("Measured vertical HID span", text: $spanY).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
                 Button("Save calibration to board") { perform {
                     guard let x = Int(spanX), let y = Int(spanY), (1...32000).contains(x), (1...32000).contains(y) else { throw DeviceError(message: "Enter both measured spans.") }
-                    _ = try await client.request("calibration", method: "PUT", object: ["span_x": x, "span_y": y, "landscape": profile.landscape]);message = "Board calibration saved."
+                    _ = try await client.request("calibration", method: "PUT", object: ["device": profile.device ?? "default", "span_x": x, "span_y": y, "landscape": profile.landscape]);message = "Board calibration saved."
                 } }
             }.padding(8)
         }
@@ -165,6 +167,14 @@ struct ClickerView: View {
 
     private func number(_ title: String, value: Binding<Int>) -> some View {
         VStack(alignment: .leading) { Text(title).font(.caption); TextField(title, value: value, format: .number).keyboardType(.numberPad).textFieldStyle(.roundedBorder) }
+    }
+    private func scheduleIDs() throws -> [Int] {
+        let parts = schedules.split(separator: ",", omittingEmptySubsequences: false)
+        let ids = parts.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard ids.count == parts.count, (1...16).contains(ids.count), ids.allSatisfy({ (0..<32).contains($0) }) else {
+            throw DeviceError(message: "Choose 1–16 saved slots from 0 to 31.")
+        }
+        return ids
     }
     private func addTarget() { if profile.points.count < 1000 { profile.points.append(ClickTarget()) } }
     private func move(_ i: Int, _ direction: Int) { let j = i + direction;if profile.points.indices.contains(j) { profile.points.swapAt(i, j) } }

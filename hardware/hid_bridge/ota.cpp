@@ -1,15 +1,17 @@
 #include "clicker_service.h"
 #include "ota_public_key.h"
+#include <atomic>
 #include <esp_http_server.h>
 #include <esp_ota_ops.h>
 #include <mbedtls/sha256.h>
 #include <sodium.h>
-static String state = "idle";
-static size_t written = 0, total = 0;
-static bool updating = false;
+static std::atomic<const char *> state{"idle"};
+static std::atomic<size_t> written{0}, total{0};
+static std::atomic<bool> updating{false};
 String ota_status() {
-  return "{\"state\":\"" + state + "\",\"written\":" + String(written) +
-         ",\"total\":" + String(total) + "}";
+  return String("{\"state\":\"") + state.load() +
+         "\",\"written\":" + String(written.load()) +
+         ",\"total\":" + String(total.load()) + "}";
 }
 static bool readExact(httpd_req_t *r, uint8_t *p, size_t n) {
   int timeouts = 0;
@@ -26,12 +28,11 @@ static bool readExact(httpd_req_t *r, uint8_t *p, size_t n) {
 }
 bool ota_upload(void *request) {
   auto *r = (httpd_req_t *)request;
-  if (updating) {
+  if (updating.exchange(true)) {
     httpd_resp_set_status(r, "409 Conflict");
     httpd_resp_sendstr(r, "Update already in progress");
     return false;
   }
-  updating = true;
   state = "checking";
   written = 0;
   uint8_t header[172];
@@ -80,7 +81,7 @@ bool ota_upload(void *request) {
   uint8_t data[2048];
   bool ok = true;
   while (written < size) {
-    size_t n = std::min<size_t>(sizeof data, size - written);
+    size_t n = std::min<size_t>(sizeof data, size - written.load());
     if (!readExact(r, data, n) || esp_ota_write(handle, data, n) != ESP_OK) {
       ok = false;
       break;

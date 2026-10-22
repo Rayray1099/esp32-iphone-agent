@@ -122,7 +122,7 @@ void asynchronousAndFairness() {
   }
   for (auto n : seen)
     assert(n == 3);
-  std::strcpy(distinct[1]->device, "another-phone");
+  std::memcpy(distinct[1]->device, "another-phone", sizeof "another-phone");
   assert(!fair.start(profiles, 16, c, t));
 }
 int main() {

@@ -1,6 +1,9 @@
 name: iOS device IPA for local signing
 on:
   workflow_dispatch:
+  push:
+    branches: [feature/s3-offline-clicker]
+    paths: [.github/workflows/ios-device.yml]
 permissions:
   contents: read
 jobs:

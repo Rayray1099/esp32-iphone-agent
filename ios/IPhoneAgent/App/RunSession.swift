@@ -52,6 +52,7 @@ extension AppModel {
         live.start(task: task, runID: runID, limit: agent.maxSteps)
         mark("Live Activity requested")
         do {
+            _ = try await board.commands.send("v1 POST input/claim {}")
             if snapMode {
                 if feed.streamOn { try await feed.stream(false) }
                 mark("snap-per-step mode (stream off)")
@@ -81,6 +82,7 @@ extension AppModel {
             say("started: \(task)")
             began(task, early: true)
         } catch {
+            _ = try? await board.commands.send("v1 POST input/release {}")
             say("cannot start: \(error.localizedDescription)")
             traces.write(feed.frame, kind: "step", ["action": .str("error"),
                                                     "reason": .str("cannot start: \(error.localizedDescription)")])
@@ -193,7 +195,10 @@ extension AppModel {
     func agentFinished() {
         ended()
         if let last = agent.steps.last { say("finished: \(last["action"]?.str ?? "") \(last["reason"]?.str ?? last["answer"]?.str ?? "")") }
-        Task { try? await feed.stream(false) }
+        Task {
+            try? await feed.stream(false)
+            _ = try? await board.commands.send("v1 POST input/release {}")
+        }
         endBackgroundTask()
     }
 

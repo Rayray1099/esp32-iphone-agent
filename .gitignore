@@ -22,3 +22,15 @@ hardware/hid_bridge/build/
 hardware/tests/test
 hardware/tests/test.dSYM/
 hardware/tools/out/
+hardware/idf/components/
+hardware/idf/deps/
+hardware/idf/managed_components/
+hardware/idf/build/
+hardware/idf/sdkconfig
+hardware/idf/sdkconfig.old
+output/
+*.pem
+*.key
+*.ota
+.playwright-cli/
+ios/build-sim/

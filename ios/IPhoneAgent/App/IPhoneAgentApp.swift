@@ -16,7 +16,7 @@ struct IPhoneAgentApp: App {
     }
 }
 
-enum AppTab: Hashable { case agent, runs, settings }
+enum AppTab: Hashable { case agent, clicker, runs, settings }
 
 /// The setup screens; Home's status chips open the one that fixes a problem.
 enum SetupPage: Int, CaseIterable, Identifiable {
@@ -36,6 +36,9 @@ struct RootView: View {
                      intents: app.intents, recorder: app.recorder)
                 .tabItem { Label("Agent", systemImage: "face.smiling") }
                 .tag(AppTab.agent)
+            ClickerView(app: app)
+                .tabItem { Label("Clicker", systemImage: "cursorarrow.click.2") }
+                .tag(AppTab.clicker)
             RunsView(app: app, runs: app.runs, agent: app.agent)
                 .tabItem { Label("Runs", systemImage: "play.rectangle.on.rectangle") }
                 .tag(AppTab.runs)

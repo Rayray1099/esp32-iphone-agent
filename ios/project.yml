@@ -10,7 +10,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    TARGETED_DEVICE_FAMILY: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
 targets:
   IPhoneAgent:
     type: application
@@ -40,8 +40,9 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: $(IA_BUNDLE_ID)
             CFBundleURLSchemes: [iphoneagent]
-        UIRequiresFullScreen: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSBluetoothAlwaysUsageDescription: ESP32 Agent talks to its USB board over Bluetooth to see the screen and move the pointer.
         UIBackgroundModes: [bluetooth-central]
         UIFileSharingEnabled: true

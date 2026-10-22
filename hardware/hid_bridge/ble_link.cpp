@@ -136,6 +136,14 @@ class CharCb : public NimBLECharacteristicCallbacks {
     const NimBLEAttValue &raw = c->getValue();
     String v(raw.c_str(), raw.length());
     if (c == netChar) { net_request(v); return; }
+    // Versioned commands can carry credentials and certificates. Require the same
+    // encrypted, bonded channel as the existing network characteristic.
+    if (v.indexOf(" v1 ") >= 0 && (!ci.isEncrypted() || !ci.isBonded())) {
+      String requestId = v.substring(0, v.indexOf(' '));
+      ble_reply(requestId + " err Pair and encrypt the BLE connection first");
+      NimBLEDevice::startSecurity(ci.getConnHandle());
+      return;
+    }
     char line[CMD_MAX] = {0};
     v.trim();
     strncpy(line, v.c_str(), CMD_MAX - 1);

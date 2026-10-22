@@ -18,6 +18,8 @@
 #include "netcfg.h"
 #include "video_link.h"
 #include "src/airplay/airplay.h"
+#include "clicker_service.h"
+#include <esp_ota_ops.h>
 
 const int STEP = 10;      // max pointer delta per report while moving
 const int STEP_MS = 8;    // report interval; constant pace keeps iOS acceleration predictable
@@ -91,6 +93,8 @@ String run(const String &line) {
   sscanf(arg.c_str(), "%ld %ld", &a, &b);
 
   if (cmd == "ping") return "ok";
+  if (!clicker_manual_begin()) return "err USB input busy";
+  struct ManualRelease { ~ManualRelease() { clicker_manual_end(mouse.isPressed(MOUSE_LEFT)); } } manualRelease;
   if (!usbReady()) return "err phone usb asleep (unlock the phone)";
   if (cmd == "home") {  // slam the pointer into the top-left corner
     for (int i = 0; i < HOME_REPORTS; i++) { mouse.move(-127, -127); delay(2); }
@@ -126,6 +130,8 @@ const char *usbState() {
 
 // Board-level commands from the app; everything else is an HID command for run().
 String board(const String &line, const String &id) {
+  String v1 = clicker_command(line);
+  if (v1.length()) return v1;
   int sp = line.indexOf(' ');
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String arg = sp < 0 ? "" : line.substring(sp + 1);
@@ -234,11 +240,17 @@ void setup() {
   esp_task_wdt_reconfigure(&wdt);
   esp_task_wdt_add(NULL);
 
-  net_begin();
-  if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
-  ble_begin("ESP32 Agent " + board_suffix());
-  startAirplay();
-  xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
+  clicker_begin();
+  net_begin(clicker_radios_off());
+  display_begin();
+  if (!clicker_radios_off()) {
+    if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
+    ble_begin("ESP32 Agent " + board_suffix());
+    startAirplay();
+    controller_begin();
+    xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
+  }
+  // Pending OTA images are confirmed only after local services have survived startup.
   Serial.printf("boot %s: free internal heap %u (largest %u), PSRAM %u, reset %s\n", receiverName.c_str(),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -247,11 +259,24 @@ void setup() {
 
 void loop() {
   static bool linked = false;
+  static bool healthChecked = false;
+  if (!healthChecked && millis() > 10000) {
+    healthChecked = true;
+    if (clicker_healthy() && display_healthy() && ESP.getPsramSize() >= 8*1024*1024)
+      esp_ota_mark_app_valid_cancel_rollback();
+    else {
+      esp_ota_img_states_t state;
+      if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY)
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+  }
   esp_task_wdt_reset();
   net_poll();
+  clicker_poll();
+  display_poll();
+  if (!clicker_radios_off()) remote_poll();
   if (linked && !ble_connected()) {
-    mouse.release(MOUSE_LEFT);  // a gesture cut off mid-way must not leave the button held (long press)
-    keyboard.releaseAll();
+    if (!clicker_busy()) { mouse.release(MOUSE_LEFT); keyboard.releaseAll(); }
     video_stream(false);
   }
   linked = ble_connected();
@@ -266,7 +291,8 @@ void loop() {
     Serial.println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));
     return;
   }
-  if (!ble_pop_cmd(line, 50)) return;
+  if (clicker_radios_off()) return;
+  if (!ble_pop_cmd(line, 5)) return;
   int sp = line.indexOf(' ');
   String id = sp < 0 ? line : line.substring(0, sp);
   String rest = sp < 0 ? "" : line.substring(sp + 1);

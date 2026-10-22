@@ -1,40 +1,69 @@
 name: CI
-
 on:
   push:
-    branches: [main]
+    branches: [main, feature/s3-offline-clicker]
   pull_request:
-
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   ios:
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iPhone, iPad]
     defaults:
       run:
         working-directory: ios
     steps:
       - uses: actions/checkout@v5
-      - name: Unit tests (simulator, unsigned)
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Unit tests on simulator
         run: |
-          sim=$(xcrun simctl list devices available | grep -Eo 'iPhone [0-9]+[A-Za-z ]*\(' | head -1 | sed 's/ ($//')
-          echo "simulator: $sim"
-          xcodebuild test -scheme IPhoneAgent -destination "platform=iOS Simulator,name=$sim" \
-            -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO
-
+          sim=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devices"]; print(next(d["udid"] for devices in ds.values() for d in devices if d["name"].startswith("${{ matrix.device }}")))')
+          xcodebuild test -scheme IPhoneAgent -destination "platform=iOS Simulator,id=$sim" -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-${{ matrix.device }}-test-results
+          path: ios/build-sim/Logs/Test/*.xcresult
   firmware:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: arduino/setup-arduino-cli@v2
-      - run: |
-          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core install esp32:esp32@3.3.12 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli lib install "NimBLE-Arduino@2.5.1"
-      - name: Build
-        run: hardware/flash.sh --build-only
-      - name: Host tests (bplist, GOP buffer)
+      - run: python3 tools/bootstrap.py && python3 tools/bundle_web.py
+      - name: ESP-IDF S3 build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.2
+          target: esp32s3
+          path: hardware/idf
+          command: idf.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s3-n8r8-firmware
+          path: |
+            hardware/idf/build/*.bin
+            hardware/idf/build/bootloader/*.bin
+            hardware/idf/build/partition_table/*.bin
+            hardware/idf/build/flasher_args.json
+            hardware/idf/build/*.elf
+            hardware/idf/build/*.map
+      - name: Existing bplist and GOP tests
         run: make -C hardware/tests
-
-  server:  # legacy v0.1.0 architecture, kept working
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install cryptography pillow
+      - run: python tools/host_tests.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-screen-fixtures
+          path: output/screens/
+  server:
     runs-on: ubuntu-latest
     strategy:
       matrix:

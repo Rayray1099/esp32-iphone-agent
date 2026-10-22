@@ -1,0 +1,43 @@
+dependencies:
+  espressif/libsodium:
+    component_hash: 39c9dc77d81804d54a539c8f076faed165152be7720ddd0e721acb9daf4aa5af
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.22
+  espressif/mdns:
+    component_hash: 291732b5df4d181eb75eba9042799a508c4c124503a0c0573132a0a48d2e3fbe
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.2
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+  joltwallet/littlefs:
+    component_hash: 01faa388c6305fe77fd6962cda6171e753033458f24f8fae9e9d932e3d817a4c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.22.1
+direct_dependencies:
+- espressif/libsodium
+- espressif/mdns
+- idf
+- joltwallet/littlefs
+manifest_hash: 238df6363f560240bda9433b3211e60349a5c160a2c5c076db882d4f26b6f649
+target: esp32s3
+version: 2.0.0

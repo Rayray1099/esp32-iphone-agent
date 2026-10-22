@@ -11,8 +11,13 @@ The redesigned Traditional Chinese app, PULSE 連點器 1.1, was signed through 
 existing LCSign certificate, installed, launched and connected to the board.
 Physical verification covered the live dashboard, saved profile loading,
 adding a second target and applying CPS settings without writing those test
-edits over the saved game profiles. A final build adds automatic retry while
-BLE negotiates its MTU and translates the remaining Clicker tab label.
+edits over the saved game profiles. Version 1.1 build 3 is now signed, installed
+and launched on the physical iPhone. The translated 連點器 tab is visible, and
+board status plus saved profiles load automatically after Bluetooth connects,
+without tapping refresh. The final build retries while BLE negotiates its MTU.
+The dashboard shows the previous run's 43.9 CPS and 300 clicks; no clicking was
+started during installation. UART confirms that the board is stopped, with
+Wi-Fi off and the Bluetooth mouse connected.
 
 ## Display and controller changes
 
@@ -78,6 +83,9 @@ selected screenshots/reports, never the complete folder.
 | Evidence | Purpose |
 | --- | --- |
 | flash-pulse.log | Verified physical firmware write |
+| pulse-build3-installed.jpg | Final build 3 installed and connected dashboard |
+| pulse-build3-install-report.json | Final installation and automatic BLE loading checks |
+| pulse-build3-launch.json | Physical app accessibility tree after automatic loading |
 | pulse-installed.jpg | Installed Chinese dashboard |
 | pulse-editor-installed.jpg | Physical target editor |
 | pulse-board-running.bmp | Actual board Run framebuffer |

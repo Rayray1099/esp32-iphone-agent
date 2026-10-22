@@ -52,7 +52,9 @@ extension AppModel {
         live.start(task: task, runID: runID, limit: agent.maxSteps)
         mark("Live Activity requested")
         do {
-            _ = try await board.commands.send("v1 POST input/claim {}")
+            if await ClickerClient(channel: board.commands).supportsAPI() {
+                _ = try await board.commands.send("v1 POST input/claim {}")
+            }
             if snapMode {
                 if feed.streamOn { try await feed.stream(false) }
                 mark("snap-per-step mode (stream off)")

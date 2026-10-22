@@ -59,10 +59,12 @@ def main():
         if path.suffix.lower() in {'.pem', '.key'}:
             raise SystemExit('Private-key extension in delivery; refusing to archive')
         content = path.read_bytes()
-        if b'-----BEGIN PRIVATE KEY-----' in content or b'tskey-auth-' in content:
-            # Guides may mention the enrollment-key prefix; never retain an actual key.
-            if b'-----BEGIN PRIVATE KEY-----' in content:
-                raise SystemExit('Private key material in delivery')
+        # TLS parsers contain the PEM delimiter as a literal; require an actual
+        # PEM body rather than rejecting that harmless string in the firmware.
+        if re.search(rb'-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----\s+[A-Za-z0-9+/=\r\n]{40,}', content):
+            raise SystemExit('Private key material in delivery: ' + path.name)
+        if re.search(rb'tskey-auth-[A-Za-z0-9_-]{20,}', content):
+            raise SystemExit('Enrollment key material in delivery: ' + path.name)
         files.append({'path': path.relative_to(dest).as_posix(), 'bytes': len(content),
                       'sha256': hashlib.sha256(content).hexdigest()})
     (dest / 'manifest.json').write_text(json.dumps({'commit': commit, 'working_tree_dirty': dirty,

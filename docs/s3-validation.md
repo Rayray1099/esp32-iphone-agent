@@ -39,7 +39,7 @@ separate from production adapters.
 | Boot confirmation | PASS: real IDF app state changes PENDING_VERIFY to VALID on staged OTA slot |
 | Failed-boot rollback | PASS: real bootloader rejects unconfirmed staged slot after restart and boots the previous VALID slot |
 | TFT capture | Six shared-renderer captures including certificate error and bad-signature update; demo values, never hardware measurements |
-| Browser | Real headless Chromium at 390px phone and 834px tablet; connect/save/load/start/stop, add/duplicate/delete, target reorder, 1us bulk delay, screen BMP refresh; no horizontal page overflow in checked layouts |
+| Browser | Real headless Chromium at 390px phone and 834px tablet; connect/save/load/start/stop, add/duplicate/delete, drag/reorder, malformed/valid imports, export roundtrip, 1us bulk delay, screen BMP refresh; no horizontal page overflow in checked layouts |
 | iOS CI | Native unit and Clicker UI flow run on macOS iPhone/iPad simulators; latest all-green baseline below |
 | Upstream regression | bplist/GOP sanitizer tests and server tests on Python 3.10/3.12 pass in Actions |
 

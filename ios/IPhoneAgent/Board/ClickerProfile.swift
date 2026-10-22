@@ -31,6 +31,13 @@ struct ClickProfile: Codable, Equatable {
 @MainActor struct ClickerClient {
     let channel: CommandChannel
 
+    func supportsAPI() async -> Bool {
+        guard let reply = try? await channel.send("capabilities"),
+              let object = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
+              let version = object["api"] as? Int else { return false }
+        return version >= 1
+    }
+
     static func crc32(_ data: Data) -> UInt32 {
         var crc: UInt32 = .max
         for byte in data {

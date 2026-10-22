@@ -35,9 +35,9 @@ import XCTest
     }
 
     func testTheStatusLabelsSayWhatIsMissing() {
-        XCTAssertEqual(Recovery.Stage(part: .board, ask: false).status.full, "Reconnecting…")
-        XCTAssertEqual(Recovery.Stage(part: .mirroring, ask: false).status.full, "Waiting for mirroring…")
-        XCTAssertEqual(Recovery.Stage(part: .mirroring, ask: true).status.full, "Tap Screen Mirroring → ESP32 Agent to continue")
+        XCTAssertEqual(Recovery.Stage(part: .board, ask: false).status.full, String(localized: "Reconnecting…"))
+        XCTAssertEqual(Recovery.Stage(part: .mirroring, ask: false).status.full, String(localized: "Waiting for mirroring…"))
+        XCTAssertEqual(Recovery.Stage(part: .mirroring, ask: true).status.full, String(localized: "Tap Screen Mirroring → ESP32 Agent to continue"))
         for part in [Recovery.Part.board, .hotspot, .mirroring] {
             for ask in [false, true] {
                 XCTAssertLessThanOrEqual(Recovery.Stage(part: part, ask: ask).status.short.count, IslandStatus.compactLimit)

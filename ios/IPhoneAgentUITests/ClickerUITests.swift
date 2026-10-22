@@ -5,7 +5,7 @@ final class ClickerUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-mock", "-onboarded", "YES", "-sharePrivacyAsked", "YES", "-acceptedDisclaimer", "YES", "-AppleLanguages", "(zh-Hant)"]
         app.launch()
-        XCTAssertTrue(app.otherElements["clickerDashboard"].waitForExistence(timeout: 20) || app.staticTexts["liveCPS"].exists)
+        XCTAssertTrue(app.staticTexts["liveCPS"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["43.7"].exists)
         XCTAssertTrue(app.buttons["startClicker"].exists)
         XCTAssertTrue(app.buttons["stopClicker"].exists)

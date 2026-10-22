@@ -5,19 +5,19 @@ import XCTest
 @MainActor final class IslandTests: XCTestCase {
     func testSwipeGazeUsesDirectionRatherThanScreenPosition() {
         let right: JObject = ["action": .str("swipe"), "x1": .int(100), "x2": .int(200), "y1": .int(200), "y2": .int(200)]
-        XCTAssertEqual(IslandStatus.acting(right).short, "Swiping right")
+        XCTAssertEqual(IslandStatus.acting(right).short, String(localized: "Swiping right"))
         XCTAssertEqual(IslandStatus.gaze(right), CGPoint(x: 1, y: 0))
         let up: JObject = ["action": .str("swipe"), "x1": .int(800), "x2": .int(800), "y1": .int(900), "y2": .int(700)]
-        XCTAssertEqual(IslandStatus.acting(up).short, "Swiping up")
+        XCTAssertEqual(IslandStatus.acting(up).short, String(localized: "Swiping up"))
         XCTAssertEqual(IslandStatus.gaze(up), CGPoint(x: 0, y: -1))
     }
 
     func testMinimalTextKeepsPendingPlanningThinkingAndRetryDistinct() {
         let states = [IslandStatus.waiting, .planning, .thinking, .retrying]
-        XCTAssertEqual(states.compactMap(\.minimal), ["Wait", "Plan", "Think", "Retry"])
+        XCTAssertEqual(states.compactMap(\.minimal), [String(localized: "Wait"), String(localized: "Plan"), String(localized: "Think"), String(localized: "Retry")])
         XCTAssertTrue(states.allSatisfy(\.waits))
-        XCTAssertEqual(IslandStatus.acting(["action": .str("swipe")]).minimal, "Swipe")
-        XCTAssertEqual(IslandStatus.acting(["action": .str("wait")]).minimal, "Wait")
+        XCTAssertEqual(IslandStatus.acting(["action": .str("swipe")]).minimal, String(localized: "Swipe"))
+        XCTAssertEqual(IslandStatus.acting(["action": .str("wait")]).minimal, String(localized: "Wait"))
     }
 
     func testTargetFromThought() {
@@ -31,13 +31,13 @@ import XCTest
     func testLabelsFitTheCompactIsland() {
         let tap: JObject = ["thought": .str("I tap the Clock app."), "action": .str("tap"), "x": .int(900), "y": .int(100)]
         let s = IslandStatus.acting(tap)
-        XCTAssertEqual(s.full, "Tapping Clock")
+        XCTAssertEqual(s.full, String(localized: "Tapping \("Clock")"))
         XCTAssertLessThanOrEqual(s.short.count, IslandStatus.compactLimit)
         XCTAssertEqual(s.look!.x, 0.8, accuracy: 0.001)
         XCTAssertEqual(s.look!.y, -0.8, accuracy: 0.001)
         let long = IslandStatus.acting(["action": .str("type"), "text": .str("Set an alarm for eight o'clock")])
         XCTAssertLessThanOrEqual(long.short.count, IslandStatus.compactLimit)
-        XCTAssertEqual(IslandStatus.acting(["action": .str("type"), "text": .str("0800")]).short, "Typing 0800")
+        XCTAssertEqual(IslandStatus.acting(["action": .str("type"), "text": .str("0800")]).short, String(localized: "Typing \("0800")"))
         XCTAssertTrue(IslandStatus.thinking.waits)
     }
 }

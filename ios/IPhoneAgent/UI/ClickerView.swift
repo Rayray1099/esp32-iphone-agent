@@ -131,7 +131,6 @@ struct ClickerView: View {
         .background(LinearGradient(colors: [Color(red: 0.06, green: 0.15, blue: 0.22), Color(red: 0.025, green: 0.065, blue: 0.12)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 30))
         .overlay(RoundedRectangle(cornerRadius: 30).stroke(cyan.opacity(0.22), lineWidth: 1))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: status.output_cps)
-        .accessibilityIdentifier("clickerDashboard")
     }
 
     private func metric(_ title: String, _ value: String) -> some View {
@@ -420,10 +419,15 @@ struct ClickerView: View {
         }
         statusAvailable = false
         guard board.connected else { return }
-        do { try await reload() } catch { message = "讀取失敗：\(error.localizedDescription)" }
+        var profilesLoaded = false
         while !Task.isCancelled && board.connected {
             if !busy && scenePhase == .active {
-                do { status = try await client.runStatus(); statusAvailable = true }
+                do {
+                    // A new BLE link may still be negotiating its MTU. Retry the complete
+                    // initial load instead of leaving the dashboard with an empty list.
+                    if !profilesLoaded { try await reload(); profilesLoaded = true }
+                    else { status = try await client.runStatus(); statusAvailable = true }
+                }
                 catch { statusAvailable = false; message = "狀態更新失敗：\(error.localizedDescription)" }
             }
             do { try await Task.sleep(for: .seconds(1)) } catch { return }

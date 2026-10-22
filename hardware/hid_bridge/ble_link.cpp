@@ -10,6 +10,8 @@
 #include "ble_link.h"
 #include <atomic>
 #include <NimBLEDevice.h>
+#include <NimBLEHIDDevice.h>
+#include <esp_timer.h>
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
 
@@ -40,6 +42,16 @@ struct Text {
 };
 
 static NimBLEServer *server;
+static NimBLECharacteristic *mouseReport;
+static std::atomic<int> mousePeer{-1};
+static int64_t lastMouseReportUs = 0;
+static uint8_t mouseMap[] = {
+  0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x01,0x09,0x01,0xA1,0x00,
+  0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,0x95,0x03,
+  0x75,0x01,0x81,0x02,0x95,0x01,0x75,0x05,0x81,0x03,0x05,0x01,
+  0x09,0x30,0x09,0x31,0x15,0x81,0x25,0x7F,0x75,0x08,0x95,0x02,
+  0x81,0x06,0xC0,0xC0
+};
 static NimBLECharacteristic *chars[CH_COUNT], *netChar;
 static QueueHandle_t cmdQueue, replyQueue;
 static SemaphoreHandle_t statusLock;
@@ -48,6 +60,7 @@ static bool statusDirty;
 static std::atomic<int> ctrlPending;  // replies queued or sending + a status waiting; video yields to them
 static volatile int peers[MAX_PEERS] = {-1, -1};
 static volatile bool subscribed[MAX_PEERS][CH_COUNT];
+static bool mouseSubscribed[MAX_PEERS]{};
 static uint32_t winStart, winBytes;  // touched by the video task only
 static volatile uint32_t kbps;
 static std::atomic<uint32_t> drops, replyDrops;
@@ -115,8 +128,10 @@ class ServerCb : public NimBLEServerCallbacks {
     if (peerCount() < MAX_PEERS) NimBLEDevice::startAdvertising();  // room for the debug harness
   }
   void onDisconnect(NimBLEServer *s, NimBLEConnInfo &ci, int reason) override {
+    if (mousePeer == ci.getConnHandle()) mousePeer = -1;
     int i = slotOf(ci.getConnHandle());
     if (i >= 0) {
+      mouseSubscribed[i] = false;
       for (int c = 0; c < CH_COUNT; c++) subscribed[i][c] = false;
       peers[i] = -1;
     }
@@ -128,7 +143,14 @@ class ServerCb : public NimBLEServerCallbacks {
   void onPhyUpdate(NimBLEConnInfo &ci, uint8_t tx, uint8_t rx) override {
     BLE_LOG("conn %u: phy tx %uM rx %uM\n", ci.getConnHandle(), tx, rx);
   }
-  void onAuthenticationComplete(NimBLEConnInfo &ci) override { logConn("security", ci); }
+  void onAuthenticationComplete(NimBLEConnInfo &ci) override {
+    logConn("security", ci);
+    int slot = slotOf(ci.getConnHandle());
+    if (slot >= 0 && mouseSubscribed[slot] && ci.isEncrypted() && ci.isBonded()) {
+      int expected = -1;
+      mousePeer.compare_exchange_strong(expected, ci.getConnHandle());
+    }
+  }
 };
 
 class CharCb : public NimBLECharacteristicCallbacks {
@@ -156,6 +178,15 @@ class CharCb : public NimBLECharacteristicCallbacks {
     c->setValue((const uint8_t *)j.c_str(), j.length());
   }
   void onSubscribe(NimBLECharacteristic *c, NimBLEConnInfo &ci, uint16_t sub) override {
+    if (c == mouseReport) {
+      int slot = slotFor(ci.getConnHandle());
+      if (slot >= 0) mouseSubscribed[slot] = sub & 1;
+      if ((sub & 1) && ci.isEncrypted() && ci.isBonded()) {
+        int expected = -1;
+        mousePeer.compare_exchange_strong(expected, ci.getConnHandle());
+      } else if (mousePeer == ci.getConnHandle()) mousePeer = -1;
+      return;
+    }
     int i = indexOf(c), p = sub & 1 ? slotFor(ci.getConnHandle()) : slotOf(ci.getConnHandle());
     if (i >= 0 && p >= 0) subscribed[p][i] = sub & 1;
     BLE_LOG("conn %u: %s %s\n", ci.getConnHandle(), sub & 1 ? "subscribed" : "unsubscribed",
@@ -283,15 +314,26 @@ void ble_begin(const String &name) {
   cmd->setCallbacks(&charCb);
   netChar->setCallbacks(&charCb);
   for (auto *c : chars) c->setCallbacks(&charCb);
+  auto *hid = new NimBLEHIDDevice(server);
+  hid->setManufacturer("ESP32 Agent");
+  hid->setPnp(0x02, 0x303A, 0x4001, 0x0200);
+  hid->setHidInfo(0, 0x02);
+  hid->setReportMap(mouseMap, sizeof mouseMap);
+  mouseReport = hid->getInputReport(1);
+  mouseReport->setCallbacks(&charCb);
+  hid->setBatteryLevel(100);
   server->start();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   NimBLEAdvertisementData data, scan;
   data.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-  data.setCompleteServices(NimBLEUUID(UUID("0000")));
+  data.setAppearance(HID_MOUSE);
+  data.addServiceUUID(NimBLEUUID(uint16_t(0x1812)));
+  data.addServiceUUID(NimBLEUUID(UUID("0000")));
   scan.setName(name.c_str());
   adv->setAdvertisementData(data);
   adv->setScanResponseData(scan);
+  adv->enableScanResponse(true);
   NimBLEDevice::startAdvertising();
   xTaskCreatePinnedToCore(txTask, "ble_tx", 3072, NULL, 3, NULL, 1);
   ctrlMax = ble_hs_hci_avail_pkts;
@@ -302,6 +344,20 @@ void ble_begin(const String &name) {
 }
 
 bool ble_connected() { return peerCount() > 0; }
+bool ble_mouse_connected() { return mousePeer.load() >= 0; }
+bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy) {
+  int peer = mousePeer.load();
+  int64_t now = esp_timer_get_time();
+  // Notifications acknowledge host submission, not phone tap reception. Bound
+  // controller backlog to two packets and pace retries outside the BLE task.
+  if (peer < 0 || !mouseReport || now - lastMouseReportUs < 1000 ||
+      os_msys_num_free() < MBUF_RESERVE || ctrlMax - ble_hs_hci_avail_pkts >= 2)
+    return false;
+  uint8_t report[] = {buttons, uint8_t(dx), uint8_t(dy)};
+  if (!mouseReport->notify(report, sizeof report, peer)) return false;
+  lastMouseReportUs = now;
+  return true;
+}
 
 bool ble_pop_cmd(String &line, uint32_t wait_ms) {
   char buf[CMD_MAX];

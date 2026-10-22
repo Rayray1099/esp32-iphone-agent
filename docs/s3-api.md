@@ -19,6 +19,7 @@ Query capabilities before using extensions on another firmware.
 | GET/PUT | calibration | span_x, span_y, landscape, device |
 | POST | pointer | command: home or move dx dy |
 | POST | input/claim, input/release | AI mode arbitration |
+| GET/PUT | input/output | Select usb or bluetooth while stopped |
 | GET/PUT | network | Redacted status / Wi-Fi and enterprise config |
 | GET/PUT | tailscale | Redacted status / enrollment |
 | GET | logs, system/tasks | Bounded events / task and heap data |
@@ -63,3 +64,17 @@ The AI lease arbitrates modes, not separate user identities. Legacy paired
 debug clients remain trusted and must not inject HID during an AI run. Use one
 controller at a time for large document transfers. Passwords and enrollment
 keys must never be included in logs or exported profiles.
+
+Bluetooth output uses the encrypted HID service (0x1812), report ID 1, with
+one bonded subscribed mouse host. Pair ESP32 Agent in iPhone Settings and enable
+AssistiveTouch. input/output takes {"output":"bluetooth"} or {"output":"usb"}.
+status.output_cps counts completed USB reports or BLE host submissions as named
+by cps_basis; BLE submission is not proof that iOS accepted the tap. usb_cps
+stays zero in Bluetooth mode. Offline with USB disables both radios; offline
+with Bluetooth keeps BLE enabled and disables Wi-Fi. Use separate calibration
+IDs for USB and Bluetooth, since pointer acceleration can differ.
+
+The CH340/UART and native CDC accept the same versioned debug protocol without
+the BLE response-size cap. tools/board_uart.py uses UART with reset lines off.
+Physical serial command 0 localinfo returns local setup credentials; the helper
+requires --save-local-info and never prints them. Keep that file out of Git.

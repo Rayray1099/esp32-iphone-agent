@@ -32,6 +32,7 @@ using namespace clicker;
 static std::atomic<bool> usbCompleted{false};
 static TaskHandle_t clickerTask = nullptr;
 static esp_timer_handle_t deadlineTimer = nullptr;
+static std::atomic<bool> bluetoothOutput{false};
 extern "C" void __real_tud_hid_report_complete_cb(uint8_t, const uint8_t *,
                                                   uint16_t);
 extern "C" void __wrap_tud_hid_report_complete_cb(uint8_t instance,
@@ -77,7 +78,16 @@ public:
     return false;
   }
 } transport;
-Engine engine(transport);
+class SelectedTransport : public Transport {
+public:
+  bool connected() const override {
+    return bluetoothOutput ? ble_mouse_connected() : transport.connected();
+  }
+  bool send(Report r) override {
+    return bluetoothOutput ? ble_mouse_send(r.buttons, r.dx, r.dy) : transport.send(r);
+  }
+} selectedTransport;
+Engine engine(selectedTransport);
 Button button;
 Preferences prefs;
 SemaphoreHandle_t guard;
@@ -328,7 +338,7 @@ String start(cJSON *j) {
     prefs.putUChar("selected", selection);
   }
   if (!ok)
-    return "err invalid profile, USB unavailable, or calibration missing";
+    return "err invalid profile, selected mouse unavailable, or calibration missing";
   diagnostic_event("Clicker started from saved profiles");
   return "ok";
 }
@@ -397,6 +407,7 @@ void clicker_begin() {
   guard = xSemaphoreCreateMutex();
   apiGuard = xSemaphoreCreateRecursiveMutex();
   prefs.begin("clicker", false);
+  bluetoothOutput = prefs.getString("output", "usb") == "bluetooth";
   selection = prefs.getUChar("selected", 0);
   selectedGroup = prefs.getString("group", "[" + String(selection) + "]");
   pinMode(0, INPUT_PULLUP);
@@ -550,7 +561,10 @@ String controller_token() {
   }
   return t;
 }
-bool clicker_radios_off() { return prefs.getBool("offline", false); }
+bool clicker_wifi_off() { return prefs.getBool("offline", false); }
+bool clicker_radios_off() { return clicker_wifi_off() && !bluetoothOutput; }
+bool clicker_bluetooth_output() { return bluetoothOutput; }
+const char *clicker_output() { return bluetoothOutput ? "bluetooth" : "usb"; }
 void clicker_poll() {
   uint32_t at = restartAt.load();
   if (at && (int32_t)(millis() - at) >= 0)
@@ -581,7 +595,7 @@ String clicker_api(const String &path, const String &method, const String &body,
   auto j = parse(body);
   const bool readOnly = path == "capabilities" || path == "status" ||
                         path == "logs" || path == "system/tasks";
-  const bool readWrite = path == "network" || path == "tailscale" ||
+  const bool readWrite = path == "input/output" || path == "network" || path == "tailscale" ||
                          path == "calibration" || path == "run/selection";
   if ((readOnly && method != "GET") ||
       (readWrite && method != "GET" && method != "PUT") ||
@@ -612,7 +626,11 @@ String clicker_api(const String &path, const String &method, const String &body,
     cJSON_AddNumberToObject(o.get(), "active", s.active);
     double seconds = (s.lastClickUs - s.firstClickUs) / 1e6;
     cJSON_AddNumberToObject(o.get(), "usb_cps",
-                            seconds > 0 ? (s.clicks - 1) / seconds : 0);
+                            !bluetoothOutput && seconds > 0 ? (s.clicks - 1) / seconds : 0);
+    cJSON_AddNumberToObject(o.get(), "output_cps", seconds > 0 ? (s.clicks - 1) / seconds : 0);
+    cJSON_AddStringToObject(o.get(), "output", clicker_output());
+    cJSON_AddStringToObject(o.get(), "cps_basis", bluetoothOutput ? "BLE host submissions" : "USB completions");
+    cJSON_AddBoolToObject(o.get(), "mouse_connected", selectedTransport.connected());
     cJSON_AddNumberToObject(o.get(), "requested_cps", clicker_requested_cps());
     cJSON_AddNumberToObject(o.get(), "heap", ESP.getFreeHeap());
     cJSON_AddNumberToObject(o.get(), "psram", ESP.getFreePsram());
@@ -628,6 +646,20 @@ String clicker_api(const String &path, const String &method, const String &body,
     return jsonText(o.get());
   }
   String result;
+  if (path == "input/output") {
+    if (method == "PUT") {
+      String output = field(j.get(), "output");
+      if (clicker_busy() || aiLease || (output != "usb" && output != "bluetooth") ||
+          !clicker_stop_wait()) {
+        code = 409;
+        return "{\"error\":\"Stop and release input before choosing usb or bluetooth\"}";
+      }
+      bluetoothOutput = output == "bluetooth";
+      prefs.putString("output", output);
+    }
+    return String("{\"output\":\"") + clicker_output() +
+      "\",\"connected\":" + (selectedTransport.connected() ? "true" : "false") + "}";
+  }
   if (path == "input/claim" && method == "POST") {
     xSemaphoreTake(guard, portMAX_DELAY);
     bool ok = !engine.stats().running && !engine.stats().releasing &&

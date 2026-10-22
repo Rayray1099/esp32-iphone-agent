@@ -19,6 +19,7 @@ struct ClickerView: View {
     @State private var zoom = 1.0
     @State private var spanX = ""
     @State private var spanY = ""
+    @State private var mouseOutput = "usb"
     @State private var networkJSON = "{\"mode\":\"apsta\",\"ssid\":\"eduroam\",\"eap\":{\"method\":\"peap\",\"username\":\"\",\"identity\":\"\",\"password\":\"\",\"server\":\"\",\"ca\":\"\"}}"
     private var client: ClickerClient { ClickerClient(channel: app.board.commands) }
 
@@ -83,6 +84,14 @@ struct ClickerView: View {
                     }
                     GroupBox("Board execution") {
                         VStack(spacing: 14) {
+                            Picker("Mouse output", selection: $mouseOutput) {
+                                Text("USB").tag("usb")
+                                Text("Bluetooth wireless").tag("bluetooth")
+                            }
+                            Button("Apply mouse output") { perform {
+                                _ = try await client.request("input/output", method: "PUT", object: ["output": mouseOutput])
+                                message = mouseOutput == "bluetooth" ? "Pair ESP32 Agent in iPhone Bluetooth settings and enable AssistiveTouch. Bluetooth CPS counts host submissions; verify received taps separately." : "USB mouse selected."
+                            } }
                             TextField("Concurrent slots: 0,1,2", text: $schedules).textFieldStyle(.roundedBorder)
                             Button("Start saved profiles") { perform {
                                 let ids = try scheduleIDs()
@@ -92,7 +101,7 @@ struct ClickerView: View {
                             Button("Switch board to offline mode") { perform {
                                 let ids = try scheduleIDs()
                                 _ = try await client.request("run/selection", method: "PUT", object: ["profiles": ids])
-                                _ = try await client.request("mode/offline", method: "POST");message = "Board restarting with both radios off. Hold BOOT 1s to start; hold 4s while idle for setup."
+                                _ = try await client.request("mode/offline", method: "POST");message = "Board restarting with Wi-Fi off. Bluetooth stays on when selected. Hold BOOT 1s to start; hold 4s while idle for setup."
                             } }
                         }.padding(8)
                     }

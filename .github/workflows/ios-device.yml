@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/s3-offline-clicker]
-    paths: [.github/workflows/ios-device.yml]
+    paths: [.github/workflows/ios-device.yml, 'ios/**']
 permissions:
   contents: read
 jobs:

@@ -18,6 +18,7 @@ struct ScreenData {
   const char *ota = "idle";
   const char *qr = "";
   const char *reset = "";
+  const char *output = "USB";
   int rssi = 0;
   double requestedCps = 0;
   uint64_t clicks = 0;
@@ -45,7 +46,7 @@ public:
            d.running ? 0x67e9 : 0xfdaa);
       snprintf(b, sizeof b, "%llu CLICKS", (unsigned long long)d.clicks);
       text(10, 119, b, 2, 0xffff);
-      snprintf(b, sizeof b, "USB %.1f CPS", d.cps);
+      snprintf(b, sizeof b, "%s %.1f CPS", d.output, d.cps);
       text(10, 145, b, 2, 0x4fbc);
       snprintf(b, sizeof b, "REQUESTED %.1f CPS", d.requestedCps);
       text(10, 161, b, 1, 0xffff);

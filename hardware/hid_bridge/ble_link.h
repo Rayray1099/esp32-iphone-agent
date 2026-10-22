@@ -19,3 +19,5 @@ uint32_t ble_kbps();     // video bytes out, last second
 uint32_t ble_drops();    // video notifies we failed to send
 uint32_t ble_reply_drops();  // replies that never got out to a subscribed peer
 int ble_peers();         // connected centrals
+bool ble_mouse_connected();
+bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy);

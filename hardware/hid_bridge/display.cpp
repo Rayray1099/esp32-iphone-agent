@@ -89,6 +89,7 @@ static void renderTask(void *) {
     d.ip = ip.c_str();
     d.usb = tud_mounted() ? (tud_suspended() ? "ASLEEP" : "OK") : "OFF";
     d.ble = clicker_radios_off() ? "OFF"
+            : ble_mouse_connected() ? "MOUSE CONNECTED"
             : ble_connected()    ? "CONNECTED"
                                  : "ADVERTISING";
     d.vpn = vpn.c_str();
@@ -102,6 +103,7 @@ static void renderTask(void *) {
     d.reset = resetReason();
     d.rssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     d.requestedCps = clicker_requested_cps();
+    d.output = clicker_bluetooth_output() ? "BLE SENT" : "USB";
     d.clicks = s.clicks;
     d.loops = s.loops;
     d.late = s.late;
@@ -170,6 +172,16 @@ bool display_bmp(void *request) {
     httpd_resp_sendstr(r, "No framebuffer");
     return false;
   }
+  auto *snapshot = (uint16_t *)heap_caps_malloc(320 * 240 * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!snapshot) {
+    httpd_resp_set_status(r, "503 Service Unavailable");
+    httpd_resp_sendstr(r, "Snapshot memory unavailable");
+    return false;
+  }
+  struct FreeSnapshot { uint16_t *p; ~FreeSnapshot() { free(p); } } cleanup{snapshot};
+  xSemaphoreTake(frameLock, portMAX_DELAY);
+  memcpy(snapshot, framebuffer, 320 * 240 * 2);
+  xSemaphoreGive(frameLock);
   uint8_t header[54] = {0x42, 0x4d};
   auto put = [&](int at, uint32_t v) { memcpy(header + at, &v, 4); };
   put(2, 54 + 320 * 240 * 3);
@@ -184,17 +196,15 @@ bool display_bmp(void *request) {
   httpd_resp_set_hdr(r, "Cache-Control", "no-store");
   if (httpd_resp_send_chunk(r, (char *)header, sizeof header) != ESP_OK)
     return false;
-  // Copy one row under lock. Network latency never holds the framebuffer lock.
+  // Snapshot is coherent even if slow Wi-Fi crosses a rotating status page.
   uint8_t row[960];
   for (int y = 239; y >= 0; y--) {
-    xSemaphoreTake(frameLock, portMAX_DELAY);
     for (int x = 0; x < 320; x++) {
-      uint16_t c = framebuffer[y * 320 + x];
+      uint16_t c = snapshot[y * 320 + x];
       row[x * 3] = (c & 31) * 255 / 31;
       row[x * 3 + 1] = ((c >> 5) & 63) * 255 / 63;
       row[x * 3 + 2] = ((c >> 11) & 31) * 255 / 31;
     }
-    xSemaphoreGive(frameLock);
     if (httpd_resp_send_chunk(r, (char *)row, sizeof row) != ESP_OK)
       return false;
   }

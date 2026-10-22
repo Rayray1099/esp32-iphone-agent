@@ -35,10 +35,12 @@ public:
   void clearState() { _buttons = 0; }
 };
 BridgeMouse mouse;
+static uint8_t bluetoothButtons = 0;
 USBHIDKeyboard keyboard;
 USBHIDConsumerControl consumer;
 void clearManualInputState() {
   mouse.clearState();
+  bluetoothButtons = 0;
   keyboard.releaseAll();
   consumer.release();
 }
@@ -103,7 +105,42 @@ String run(const String &line) {
 
   if (cmd == "ping") return "ok";
   if (!clicker_manual_begin()) return "err USB input busy";
-  struct ManualRelease { ~ManualRelease() { clicker_manual_end(mouse.isPressed(MOUSE_LEFT)); } } manualRelease;
+  struct ManualRelease { ~ManualRelease() { clicker_manual_end(clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT)); } } manualRelease;
+  if (clicker_bluetooth_output()) {
+    if (!ble_mouse_connected()) return "err Bluetooth mouse not paired/subscribed";
+    auto send = [](uint8_t buttons, int8_t x, int8_t y) {
+      uint32_t began = millis();
+      while (!ble_mouse_send(buttons, x, y)) {
+        if (!ble_mouse_connected() || millis() - began > 500) return false;
+        delay(1);
+      }
+      bluetoothButtons = buttons;
+      return true;
+    };
+    if (cmd == "home") {
+      for (int i = 0; i < HOME_REPORTS; ++i) {
+        if (!send(0, -127, -127)) return "err Bluetooth send failed";
+        delay(2);
+      }
+      return "ok";
+    }
+    if (cmd == "move") {
+      while (a || b) {
+        int x = constrain(a, -STEP, STEP), y = constrain(b, -STEP, STEP);
+        if (!send(bluetoothButtons, x, y)) return "err Bluetooth send failed";
+        a -= x; b -= y; delay(STEP_MS);
+      }
+      return "ok";
+    }
+    if (cmd == "press" || cmd == "release")
+      return send(cmd == "press" ? 1 : 0, 0, 0) ? "ok" : "err Bluetooth send failed";
+    if (cmd == "click") {
+      if (!send(1, 0, 0)) return "err Bluetooth send failed";
+      delay(60);
+      return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
+    }
+    return "err keyboard/scroll commands require USB output";
+  }
   if (!usbReady()) return "err phone usb asleep (unlock the phone)";
   if (cmd == "home") {  // slam the pointer into the top-left corner
     for (int i = 0; i < HOME_REPORTS; i++) { mouse.move(-127, -127); delay(2); }
@@ -255,13 +292,15 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   clicker_begin();
-  net_begin(clicker_radios_off());
+  net_begin(clicker_wifi_off());
   display_begin();
   if (!clicker_radios_off()) {
     if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
     ble_begin("ESP32 Agent " + board_suffix());
-    startAirplay();
-    controller_begin();
+    if (!clicker_wifi_off()) {
+      startAirplay();
+      controller_begin();
+    }
     xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
   }
   // Pending OTA images are confirmed only after local services have survived startup.
@@ -288,7 +327,7 @@ void loop() {
   net_poll();
   clicker_poll();
   display_poll();
-  if (!clicker_radios_off()) remote_poll();
+  if (!clicker_wifi_off()) remote_poll();
   if (linked && !ble_connected()) {
     clicker_link_lost();
     if (!clicker_busy()) { mouse.release(MOUSE_LEFT); keyboard.releaseAll(); }
@@ -313,7 +352,18 @@ void loop() {
     if (line.startsWith("0 net ")) { int code; debug->println("0 " + clicker_api("network", "PUT", line.substring(6), code)); return; }
     int sp = line.indexOf(' ');
     String id = sp < 0 ? line : line.substring(0, sp);
-    debug->println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));
+    String command = sp < 0 ? "" : line.substring(sp + 1);
+    if (command.startsWith("v1 ")) {
+      // UART/CDC are not limited by a BLE notification's MTU.
+      int methodEnd = command.indexOf(' ', 3);
+      if (methodEnd < 0) { debug->println(id + " err missing API path"); return; }
+      int pathEnd = command.indexOf(' ', methodEnd + 1);
+      String path = pathEnd < 0 ? command.substring(methodEnd + 1) : command.substring(methodEnd + 1, pathEnd);
+      int code;
+      String result = clicker_api(path, command.substring(3, methodEnd),
+                                 pathEnd < 0 ? "" : command.substring(pathEnd + 1), code);
+      debug->println(id + (code < 400 ? " ok " : " err ") + result);
+    } else debug->println(id + " " + board(command, id));
     return;
   }
   if (clicker_radios_off()) return;

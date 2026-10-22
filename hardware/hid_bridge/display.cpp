@@ -11,6 +11,8 @@
 #include <tusb.h>
 extern const char *resetReason();
 static uint16_t *framebuffer;
+static uint32_t sentRows[240]{};
+static bool firstFrame = true;
 static SemaphoreHandle_t frameLock;
 static SPIClass lcd(FSPI);
 static void command(uint8_t c, const uint8_t *p = nullptr, size_t n = 0) {
@@ -24,21 +26,29 @@ static void command(uint8_t c, const uint8_t *p = nullptr, size_t n = 0) {
 }
 static void pushFrame() {
   lcd.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
-  const uint8_t x[] = {0, 0, 1, 63}, y[] = {0, 0, 0, 239};
-  command(0x2a, x, 4);
-  command(0x2b, y, 4);
-  command(0x2c);
-  digitalWrite(15, LOW);
-  digitalWrite(6, HIGH);
+  const uint8_t x[] = {0, 0, 1, 63};
   uint8_t line[640];
   for (int y = 0; y < 240; y++) {
+    uint32_t hash = 2166136261u;
     for (int x = 0; x < 320; x++) {
       uint16_t v = framebuffer[y * 320 + x];
+      hash = (hash ^ v) * 16777619u;
       line[2 * x] = v >> 8;
       line[2 * x + 1] = v;
     }
+    if (!firstFrame && sentRows[y] == hash)
+      continue;
+    sentRows[y] = hash;
+    uint8_t row[] = {0, uint8_t(y), 0, uint8_t(y)};
+    command(0x2a, x, 4);
+    command(0x2b, row, 4);
+    command(0x2c);
+    digitalWrite(15, LOW);
+    digitalWrite(6, HIGH);
     lcd.writeBytes(line, sizeof line);
+    digitalWrite(15, HIGH);
   }
+  firstFrame = false;
   digitalWrite(15, HIGH);
   lcd.endTransaction();
 }
@@ -131,7 +141,7 @@ void display_begin() {
   command(0x29);
   lcd.endTransaction();
   digitalWrite(16, LOW);
-  xTaskCreatePinnedToCore(renderTask, "tft", 4096, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(renderTask, "tft", 8192, nullptr, 1, nullptr, 0);
 }
 void display_poll() {}
 bool display_healthy() { return framebuffer && frameLock; }

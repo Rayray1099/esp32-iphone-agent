@@ -16,12 +16,15 @@ def main():
     executable=[args.qemu]
     disk=str(image)
     if os.name=='nt':
-        disk='/mnt/'+image.drive[0].lower()+str(image)[2:].replace('\','/')
+        disk='/mnt/'+image.drive[0].lower()+image.as_posix()[2:]
         executable=['wsl','-d','Ubuntu','--',args.qemu]
-    command=executable+['-M','esp32s3','-m','8M','-nographic','-monitor','none','-drive',f'file={disk},if=mtd,format=raw']
     output=ROOT/'output/emulator';output.mkdir(parents=True,exist_ok=True)
     log=output/'qemu-s3.log'
-    with log.open('w') as stream:
+    uart=str(log)
+    if os.name=='nt':uart='/mnt/'+log.drive[0].lower()+log.as_posix()[2:]
+    command=executable+['-M','esp32s3','-display','none','-monitor','none','-serial','file:'+uart,'-drive',f'file={disk},if=mtd,format=raw']
+    log.write_text('')
+    with (output/'qemu-process.log').open('w') as stream:
         process=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT)
         try:
             deadline=time.monotonic()+45
@@ -35,3 +38,4 @@ def main():
     result=log.read_text(errors='replace');print(result[-8000:])
     if 'CLICKER_S3_EMULATOR_PASS' not in result:raise SystemExit('S3 adapter emulation failed; see '+str(log))
 if __name__=='__main__':main()
+

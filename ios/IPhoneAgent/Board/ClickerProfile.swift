@@ -46,6 +46,7 @@ struct ClickProfile: Codable, Equatable {
     func upload(_ data: Data, path: String, progress: (Double) -> Void) async throws {
         guard data.count <= 196608 else { throw DeviceError(message: "Profile or certificate exceeds board transfer limit.") }
         let id = UUID().uuidString
+        guard (channel.transport?.maxWrite ?? 0) >= 200 else { throw DeviceError(message: "Wait for BLE MTU negotiation, or use the hotspot controller for this upload.") }
         _ = try await request("transfer/begin", method: "POST", object: ["id": id, "path": path, "size": data.count, "crc32": Self.crc32(data)])
         // Fit the negotiated ATT payload, including request id and JSON/base64 overhead.
         let room = max(1, min(144, ((channel.transport?.maxWrite ?? 180) - 130) / 4 * 3))

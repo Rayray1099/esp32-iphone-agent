@@ -13,10 +13,13 @@
 #include <esp_timer.h>
 #include <mbedtls/base64.h>
 #include <memory>
+#include <sodium.h>
 #include <tusb.h>
 extern String run(const String &);
 using namespace clicker;
 static std::atomic<bool> usbCompleted{false};
+static TaskHandle_t clickerTask = nullptr;
+static esp_timer_handle_t deadlineTimer = nullptr;
 extern "C" void __real_tud_hid_report_complete_cb(uint8_t, const uint8_t *,
                                                   uint16_t);
 extern "C" void __wrap_tud_hid_report_complete_cb(uint8_t instance,
@@ -24,6 +27,8 @@ extern "C" void __wrap_tud_hid_report_complete_cb(uint8_t instance,
                                                   uint16_t len) {
   __real_tud_hid_report_complete_cb(instance, report, len);
   usbCompleted.store(true, std::memory_order_release);
+  if (clickerTask)
+    xTaskNotifyGive(clickerTask);
 }
 namespace {
 class USBTransport : public Transport {
@@ -31,6 +36,7 @@ class USBTransport : public Transport {
   Report queued{};
 
 public:
+  bool awaitingCompletion() const { return pending && !usbCompleted.load(); }
   bool connected() const override {
     bool online = tud_mounted() && !tud_suspended();
     if (!online) {
@@ -306,6 +312,8 @@ void worker(void *) {
     if (action == ButtonAction::Stop)
       engine.stop();
     engine.tick(esp_timer_get_time());
+    uint64_t next = engine.nextDeadline();
+    bool awaitingUSB = transport.awaitingCompletion();
     xSemaphoreGive(guard);
     if (action == ButtonAction::Cycle) {
       APILock apiLock;
@@ -329,15 +337,31 @@ void worker(void *) {
     }
     if (action == ButtonAction::Setup)
       clicker_setup();
-    vTaskDelay(1);
+    // USB completions and microsecond deadlines wake this task immediately.
+    // The 1ms fallback scans BOOT and detects disconnects without busy-waiting.
+    esp_timer_stop(deadlineTimer);
+    uint64_t now = esp_timer_get_time();
+    if (!awaitingUSB && next != UINT64_MAX)
+      esp_timer_start_once(deadlineTimer, next > now ? next - now : 1);
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
   }
 }
 void clearUpload() {
+  if (upload.bytes)
+    sodium_memzero(upload.bytes, upload.size + 1);
   free(upload.bytes);
   upload = {};
 }
 } // namespace
 void clicker_begin() {
+  // Profile JSON can contain 1000 points. Keep its DOM out of scarce internal
+  // SRAM; MicroLink uses this same allocator policy when it starts.
+  cJSON_Hooks hooks{};
+  hooks.malloc_fn = [](size_t n) -> void * {
+    return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  };
+  hooks.free_fn = free;
+  cJSON_InitHooks(&hooks);
   diagnostic_event("Firmware startup: stopped by default");
   guard = xSemaphoreCreateMutex();
   apiGuard = xSemaphoreCreateRecursiveMutex();
@@ -364,7 +388,23 @@ void clicker_begin() {
     selectedName = selected->name;
   free(selected);
   controller_token();
-  xTaskCreatePinnedToCore(worker, "clicker", 4096, nullptr, 4, nullptr, 1);
+  esp_timer_create_args_t timerArgs{};
+  timerArgs.callback = [](void *) {
+    if (clickerTask)
+      xTaskNotifyGive(clickerTask);
+  };
+  timerArgs.name = "click-due";
+  esp_timer_create(&timerArgs, &deadlineTimer);
+  if (!deadlineTimer) {
+    ready = false;
+    lastError = "Scheduler timer allocation failed";
+    return;
+  }
+  if (xTaskCreatePinnedToCore(worker, "clicker", 8192, nullptr, 4, &clickerTask,
+                              1) != pdPASS) {
+    ready = false;
+    lastError = "Scheduler task allocation failed";
+  }
 }
 Stats clicker_stats() {
   if (!guard)
@@ -405,6 +445,7 @@ void clicker_manual_end(bool held) {
   xSemaphoreGive(guard);
 }
 bool clicker_update_begin() {
+  APILock lock;
   xSemaphoreTake(guard, portMAX_DELAY);
   bool ok = !manualBusy && !aiLease && !updateLock;
   if (ok)
@@ -417,6 +458,7 @@ bool clicker_update_begin() {
   return ok;
 }
 void clicker_update_end() {
+  APILock lock;
   xSemaphoreTake(guard, portMAX_DELAY);
   updateLock = false;
   manualHeld = false;
@@ -436,6 +478,7 @@ String clicker_selected_name() {
   return selectedName;
 }
 String controller_token() {
+  APILock apiLock;
   String t = prefs.getString("token");
   if (t.length() != 32) {
     char b[33];
@@ -453,6 +496,7 @@ void clicker_poll() {
     ESP.restart();
 }
 void clicker_setup() {
+  APILock apiLock;
   if (clicker_busy())
     return;
   prefs.putBool("offline", false);
@@ -468,6 +512,10 @@ String clicker_api(const String &path, const String &method, const String &body,
   if (updateLock && method != "GET" && path != "run/stop") {
     code = 409;
     return "{\"error\":\"OTA owns input and flash\"}";
+  }
+  if (restartAt.load() && method != "GET" && path != "run/stop") {
+    code = 409;
+    return "{\"error\":\"Restart pending\"}";
   }
   auto j = parse(body);
   if (path == "capabilities")

@@ -102,6 +102,17 @@ public:
     owner = -1;
   }
   const Stats &stats() const { return s; }
+  uint64_t nextDeadline() const {
+    if (!s.running)
+      return UINT64_MAX;
+    if (phase != Phase::Select)
+      return due;
+    uint64_t earliest = UINT64_MAX;
+    for (const auto &slot : slots)
+      if (slot.p)
+        earliest = std::min(earliest, slot.due);
+    return earliest;
+  }
   void tick(uint64_t now) {
     if (!usb.connected()) {
       if (s.running)

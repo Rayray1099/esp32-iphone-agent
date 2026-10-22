@@ -103,11 +103,23 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/IPhoneAgent.app/IPhoneAgent"
         BUNDLE_LOADER: "$(TEST_HOST)"
+  IPhoneAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [IPhoneAgentUITests]
+    dependencies:
+      - target: IPhoneAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(IA_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: IPhoneAgent
 schemes:
   IPhoneAgent:
     build:
       targets:
         IPhoneAgent: all
         IPhoneAgentTests: [test]
+        IPhoneAgentUITests: [test]
     test:
-      targets: [IPhoneAgentTests]
+      targets: [IPhoneAgentTests, IPhoneAgentUITests]

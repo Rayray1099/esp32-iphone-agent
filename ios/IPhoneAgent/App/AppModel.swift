@@ -146,7 +146,10 @@ import UIKit
         notifier.onAction = { [weak self] action, run in self?.notificationAction(action, run: run) }
         wireRecovery()
 
-        timers.append(Task { [weak self] in await self?.board.commands.keepAwake(screenLive: { self?.feed.live ?? false }) })
+        timers.append(Task { [weak self] in await self?.board.commands.keepAwake(screenLive: {
+            guard let self else { return false }
+            return feed.live && !agent.running && !startingAgent && !calibrator.busy && !probe.capturing
+        }) })
         timers.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)

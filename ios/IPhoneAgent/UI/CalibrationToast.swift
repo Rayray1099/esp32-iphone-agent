@@ -35,6 +35,15 @@ struct CalibrationBoard: View {
     var body: some View {
         ZStack {
             ProbeGrid(flashes: probe.flashes)
+            if let target = calibrator.accuracyTarget {
+                GeometryReader { geometry in
+                    Rectangle().fill(Color.cyan.opacity(0.15))
+                        .overlay(Rectangle().stroke(Color.blue, lineWidth: 1))
+                        .overlay(Text("+").font(.system(size: 16)).foregroundStyle(.blue))
+                        .frame(width: PointerAccuracySample.side, height: PointerAccuracySample.side)
+                        .position(x: target.x * geometry.size.width, y: target.y * geometry.size.height)
+                }.ignoresSafeArea().allowsHitTesting(false)
+            }
             VStack {
                 HStack {
                     Spacer()
@@ -60,7 +69,10 @@ struct CalibrationBoard: View {
         HStack(alignment: .top, spacing: Space.m) {
             AgentFace(mood: mood, showsTab: false).frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: Space.s) {
-                switch calibrator.phase {
+                if let result = calibrator.accuracySummary {
+                    Text(verbatim: result).font(.subheadline.weight(.semibold))
+                    Text("記錄實際觸點；負值代表落點偏上。").font(.footnote).foregroundStyle(.secondary)
+                } else { switch calibrator.phase {
                 case .failed:
                     Text("Calibration didn't work").font(.subheadline.weight(.semibold))
                     if let problem = calibrator.problem {
@@ -87,6 +99,7 @@ struct CalibrationBoard: View {
                     }
                     .font(.subheadline.weight(.semibold)).monospacedDigit()
                     Text("Hands off the screen for a few seconds.").font(.footnote).foregroundStyle(.secondary)
+                }
                 }
             }
             Spacer(minLength: 0)

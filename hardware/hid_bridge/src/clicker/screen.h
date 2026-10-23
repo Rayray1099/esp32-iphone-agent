@@ -2,6 +2,7 @@
 #include "../qrcode/qrcodegen.h"
 #include "smooth_font.h"
 #include "agent_progress.h"
+#include "cjk_font.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -64,33 +65,31 @@ public:
       bool failed = !std::strcmp(a.phase, "failed");
       bool done = !std::strcmp(a.phase, "done");
       const uint16_t state = stale || failed ? 0xfa6b : done ? mint : a.active() ? cyan : 0xfdc6;
-      smooth(18, 43, stale ? "App link lost" : done ? "Completed" : failed ? "Failed" :
-             !std::strcmp(a.phase, "stopped") ? "Stopped" : "AI running", font26, state);
+      textZh(18, 43, stale ? "進度更新延遲" : done ? "任務已完成" : failed ? "任務失敗" :
+             !std::strcmp(a.phase, "stopped") ? "已停止" : "AI 執行中", state, 284, 1);
       smooth(19, 78, d.target, font11, muted, 284);
-      fill(18, 98, 284, 1, 0x1947);
+      fill(18, 94, 284, 1, 0x1947);
       snprintf(b, sizeof b, "%02u", a.step);
-      smooth(16, 99, b, font58, cyan);
-      smooth(128, 112, "STEP", font14, white);
+      smooth(16, 91, b, font58, cyan);
+      smooth(128, 104, "STEP", font14, white);
       snprintf(b, sizeof b, "of %u max", a.limit);
-      smooth(128, 134, b, font11, muted);
+      smooth(128, 126, b, font11, muted);
       snprintf(b, sizeof b, "%lu:%02lu", (unsigned long)(a.elapsed / 60), (unsigned long)(a.elapsed % 60));
-      smooth(236, 117, b, font18, white, 76);
-      char stage[64];
-      snprintf(stage, sizeof stage, "%s / %s", a.phase, a.action);
-      for (char *p = stage; *p; ++p) if (*p == '_') *p = ' ';
-      smooth(18, 166, stage, font14, state, 284);
+      smooth(236, 109, b, font18, white, 76);
+      textZh(18, 151, phaseZh(a.phase), state, 284, 1);
+      textZh(18, 174, stale ? "等待手機回報最新進度" : a.summary[0] ? a.summary : actionZh(a.action), white, 284, 2);
       const char *labels[] = {"SCREEN", "MODEL", "INPUT"};
       const unsigned times[] = {a.frameMs, a.modelMs, a.hidMs};
       for (int i = 0; i < 3; ++i) {
         int x = 18 + i * 98;
-        smooth(x, 190, labels[i], font11, muted);
+        smooth(x, 215, labels[i], font11, muted);
         snprintf(b, sizeof b, "%.1fs", times[i] / 1000.0);
-        smooth(x + 50, 190, b, font11, white, 46);
+        smooth(x + 50, 215, b, font11, white, 46);
       }
       if (a.active() && !stale) {
         int pulse = int(d.animationMs / 60 % 278);
-        rounded(18, 208, 284, 2, 1, 0x1947);
-        rounded(18 + pulse, 207, 6, 4, 2, cyan);
+        rounded(18, 236, 284, 2, 1, 0x1947);
+        rounded(18 + pulse, 235, 6, 4, 2, cyan);
       }
     } else if (page == 0) {
       const uint16_t stateColor = d.stateColor();
@@ -146,15 +145,12 @@ public:
       smooth(18, 181, d.token, font11, white, 284);
       row(199, "Update", d.ota);
     }
+    if (page == 4) return;
     fill(18, 216, 284, 1, 0x1947);
     if (page == 0) {
       smooth(18, 222, d.profile, font11, muted, 208);
       rounded(247, 226, 4, 4, 2, d.controllers ? mint : muted);
       snprintf(b, sizeof b, "%u app", d.controllers); smooth(260, 222, b, font11, muted);
-    } else if (page == 4) {
-      smooth(18, 222, d.agent.stale(d.animationMs) ? "Check app connection" :
-             d.agent.active() ? "AI owns pointer" : "Run finished", font11, muted, 200);
-      smooth(240, 222, d.output, font11, cyan, 62);
     } else {
       smooth(18, 222, d.runState(), font11, d.stateColor(), 86);
       smooth(111, 222, "BOOT 1s start / press stop", font11, muted);
@@ -163,6 +159,53 @@ public:
 
 private:
   uint16_t *fb;
+  static const char *phaseZh(const char *phase) {
+    if (!std::strcmp(phase, "waiting")) return "等待 AI 回應";
+    if (!std::strcmp(phase, "thinking")) return "整理下一步操作";
+    if (!std::strcmp(phase, "planning")) return "規劃任務步驟";
+    if (!std::strcmp(phase, "acting")) return "正在操作手機";
+    if (!std::strcmp(phase, "looking")) return "檢查最新畫面";
+    if (!std::strcmp(phase, "retrying")) return "AI 回應逾時，重試中";
+    if (!std::strcmp(phase, "help")) return "需要你的協助";
+    if (!std::strcmp(phase, "done")) return "已確認任務結果";
+    if (!std::strcmp(phase, "failed")) return "操作未完成";
+    if (!std::strcmp(phase, "stopped")) return "操作已停止";
+    return "準備連線與畫面";
+  }
+  static const char *actionZh(const char *action) {
+    if (!std::strcmp(action, "Tap")) return "點擊畫面上的目標";
+    if (!std::strcmp(action, "Swipe")) return "滑動畫面尋找目標";
+    if (!std::strcmp(action, "Type_text")) return "在輸入欄位輸入文字";
+    if (!std::strcmp(action, "Keyboard")) return "使用鍵盤快捷鍵";
+    if (!std::strcmp(action, "Home")) return "返回手機主畫面";
+    if (!std::strcmp(action, "Back")) return "返回上一個畫面";
+    return "正在確認畫面與任務進度";
+  }
+  void textZh(int x, int y, const char *value, uint16_t color, int width, int lines) {
+    const int left = x, right = x + width;
+    for (int line = 0; value && *value && line < lines;) {
+      uint32_t code;
+      if (!nextUtf8(value, code)) code = '?';
+      bool ascii = code >= font14.first && code <= font14.last;
+      int advance = ascii ? font14.glyphs[code - font14.first].advance : 16;
+      if (x + advance > right) { x = left; y += 19; if (++line == lines) break; }
+      if (ascii) {
+        char one[2] = {char(code), 0}; smooth(x, y, one, font14, color, advance);
+      } else {
+        unsigned lo = 0, hi = sizeof cjkCodes / sizeof *cjkCodes;
+        while (lo < hi) { unsigned mid = (lo + hi) / 2; if (cjkCodes[mid] < code) lo = mid + 1; else hi = mid; }
+        if (lo < sizeof cjkCodes / sizeof *cjkCodes && cjkCodes[lo] == code) {
+          const auto *bits = cjkPixels + lo * 36;
+          for (int row = 0; row < 18; ++row)
+            for (int col = 0; col < 16; ++col) {
+              int bit = row * 16 + col;
+              if (bits[bit / 8] & (0x80 >> (bit % 8))) fill(x + col, y + row, 1, 1, color);
+            }
+        } else { char missing[] = "?"; smooth(x, y, missing, font14, color, advance); }
+      }
+      x += advance;
+    }
+  }
   static uint16_t blend(uint16_t bg, uint16_t fg, unsigned alpha) {
     unsigned r = (((bg >> 11) & 31) * (15 - alpha) + ((fg >> 11) & 31) * alpha + 7) / 15;
     unsigned g = (((bg >> 5) & 63) * (15 - alpha) + ((fg >> 5) & 63) * alpha + 7) / 15;

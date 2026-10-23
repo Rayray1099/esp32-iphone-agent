@@ -331,7 +331,7 @@ extension Pointer: Gestures {}
     func nextActions() async throws -> [Planned] {
         guard let actor else { throw LLMError(message: "no actor model") }
         // actions and their effect only: echoing earlier thoughts makes the model repeat them instead of looking
-        let hidden: Set<String> = ["t", "plan", "plan_zh", "think_s", "act_s", "shot", "thought", "thought_zh", "changed"]
+        let hidden: Set<String> = ["t", "plan", "plan_zh", "think_s", "act_s", "shot", "thought", "thought_zh", "status_zh", "changed"]
         let history = steps.suffix(8).filter { $0["plan"] == nil }.map { s -> String in
             let effect = s["changed"] == .bool(true) ? " -> screen changed"
                 : s["changed"] == .bool(false) ? " -> screen did NOT change" : ""

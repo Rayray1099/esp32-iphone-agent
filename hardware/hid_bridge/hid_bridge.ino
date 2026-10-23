@@ -64,7 +64,10 @@ static String receiverName = "ESP32 Agent";
 
 void movePaced(long dx, long dy) {
   while (dx || dy) {
-    int sx = constrain(dx, -STEP, STEP), sy = constrain(dy, -STEP, STEP);
+    // iOS acceleration depends on vector speed. Separate axes so a diagonal does not
+    // silently change the gain measured by touch calibration. Keep the report pace fixed.
+    int sx = constrain(dx, -STEP, STEP);
+    int sy = sx && !mouse.isPressed(MOUSE_LEFT) ? 0 : constrain(dy, -STEP, STEP);
     mouse.move(sx, sy);
     dx -= sx;
     dy -= sy;
@@ -171,7 +174,8 @@ String run(const String &line) {
     }
     if (cmd == "move") {
       while (a || b) {
-        int x = constrain(a, -STEP, STEP), y = constrain(b, -STEP, STEP);
+        int x = constrain(a, -STEP, STEP);
+        int y = x && !bluetoothButtons ? 0 : constrain(b, -STEP, STEP);
         if (!send(bluetoothButtons, x, y)) return "err Bluetooth send failed";
         a -= x; b -= y; delay(STEP_MS);
       }

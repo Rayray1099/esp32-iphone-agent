@@ -40,7 +40,10 @@ import UIKit
     unowned let app: AppModel
     var link = -1  // board link the pointer was last calibrated on
     private var hide: Task<Void, Never>?
-    private var current: Task<Void, Never>?
+    var current: Task<Void, Never>?
+    @Published var accuracyTarget: CGPoint?
+    @Published var accuracy: [PointerAccuracySample] = []
+    @Published var accuracySummary: String?
 
     init(app: AppModel) { self.app = app }
 
@@ -80,6 +83,8 @@ import UIKit
 
     /// One automatic calibration, on the board when the app is in front.
     func run(why: String) async {
+        accuracySummary = nil
+        accuracyTarget = nil
         reason = why
         problem = nil
         progress = nil
@@ -91,7 +96,7 @@ import UIKit
         current = nil
     }
 
-    private func openBoard() {
+    func openBoard() {
         boardOpen = true
         app.probe.begin()
     }
@@ -104,6 +109,7 @@ import UIKit
     /// The board's Back button: stop whatever runs and close the board.
     func cancel() {
         current?.cancel()
+        accuracyTarget = nil
         if busy || phase == .needsTap { app.say("calibration: cancelled") }
         progress = nil
         phase = app.pointer.calibrated ? .done : .idle

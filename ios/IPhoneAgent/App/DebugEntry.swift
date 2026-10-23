@@ -44,6 +44,7 @@ extension AppModel {
         case "bench": debugCommand("bench", kb: Int(rest) ?? 256)
         case "status": say(statusSummary)
         case "log": relayHistory(Int(rest) ?? 50)
+        case "accuracy": calibrator.testSmallTargets(precise: rest == "precise")
         case "mode":
             if let mode = FrameMode(rawValue: rest) { setFrameMode(mode) } else { say("frame mode: \(FrameMode.current.rawValue)") }
         default: say("debug: unknown app command \"\(line.prefix(40))\"")

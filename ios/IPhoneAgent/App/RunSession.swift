@@ -180,6 +180,10 @@ extension AppModel {
         runs.reload()
         guard agent.running, let last = agent.steps.last, help == nil else { return }
         let moved = !StepText.notMoves.contains(last["action"]?.str ?? "")
+        if last["plan"] != nil {
+            boardProgress.summary = "已建立任務計畫，準備下一步"
+            sendBoardProgress()
+        }
         runMood = moved ? .acting : .thinking
         live.update(mood: runMood ?? .thinking, step: moveCount, line: StepText.line(last), phase: .running)
         if moved {

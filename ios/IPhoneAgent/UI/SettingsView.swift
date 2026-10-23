@@ -20,6 +20,9 @@ struct SettingsView: View {
                             value: board.connected ? board.name : String(localized: "Not connected"))
                     }
                     CalibrationRow(app: app, calibrator: app.calibrator, pointer: app.pointer)
+                    Button { app.calibrator.testSmallTargets() } label: {
+                        SettingsLabel(title: "20 pt 小按鈕精準度測試", symbol: "scope", color: .cyan)
+                    }.disabled(!app.pointer.calibrated || !app.calibrator.boardReady || app.calibrator.busy)
                     Button { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) } label: {
                         HStack {
                             SettingsLabel(title: "Language", symbol: "globe", color: .indigo)

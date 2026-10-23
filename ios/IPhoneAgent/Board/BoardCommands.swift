@@ -113,9 +113,12 @@ extension BoardTransport {
         }
     }
 
-    /// Called once when a command times out (e.g. video starving control traffic): the app turns the
-    /// stream off, then the command is retried once.
+    /// Transport recovery runs after a timeout. Mutating input is never replayed: a missing reply
+    /// does not prove that a click, relative move, or text entry failed to reach iOS.
     var onTimeout: ((String) async -> Void)?
+    nonisolated static func canReplay(_ command: String) -> Bool {
+        ["video-info", "video-status", "video-auth", "snap"].contains(command)
+    }
 
     /// Send one command; returns the text after "ok" (e.g. bench's ms). Throws DeviceError on err/timeout.
     @discardableResult
@@ -125,6 +128,9 @@ extension BoardTransport {
         } catch let e as BoardTimeout {
             guard command != "ping", !command.hasPrefix("stream"), let onTimeout else { throw e }
             await onTimeout(command)
+            guard Self.canReplay(command) else {
+                throw DeviceError(message: "指令回覆逾時，執行結果不確定，未重送點擊或文字。請先檢查目前畫面。")
+            }
             DebugLog.write("cmd retry after timeout: \(Self.safeCommand(command))")
             return try await send(command, timeout: nil)
         }
@@ -204,6 +210,7 @@ extension BoardTransport {
     }
 
     private static func safeCommand(_ command: String) -> String {
+        if command.hasPrefix("type ") { return "type [content omitted]" }
         if command.hasPrefix("v1 ") { return command.split(separator: " ").prefix(3).joined(separator: " ") + " [payload omitted]" }
         return String(command.prefix(40))
     }

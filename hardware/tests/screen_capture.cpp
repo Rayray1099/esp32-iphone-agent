@@ -13,7 +13,7 @@ int main(int argc,char** argv){
   d.target="IPHONE / A1:B2";d.controllers=1;d.inputConnected=true;d.output="BT";
   assert(std::strcmp(d.runState(),"CLICKING")==0);
   assert(d.stateColor()==0x6ff3);
-  for(int page=0;page<14;++page){
+  for(int page=0;page<18;++page){
     if(page==4){d.running=false;d.error="EAP CERTIFICATE MISMATCH";}
     if(page==5){d.ota="INVALID SIGNATURE";}
     if(page==6){d.running=false;assert(std::strcmp(d.runState(),"STOPPED")==0);assert(d.stateColor()==0xfdc6);}
@@ -25,6 +25,10 @@ int main(int argc,char** argv){
       if(page==10) d.agent.update("100 acting 8 40 440 3800 210 85 Tap", 200);
       if(page==11) d.agent.update("100 done 8 40 440 3800 210 87 Completed", 300);
       if(page==12) d.agent.update("101 failed 8 40 440 3800 210 87 Run_error", 300);
+      if(page==14) d.agent.update("102 acting 3 40 880 3800 210 20 Tap |開啟計算機並輸入數字，確認結果是否正確", 300);
+      if(page==15) d.agent.update("103 acting 4 40 440 3800 210 25 Tap |檢查鬧鐘時間與重複日期", 300);
+      if(page==16) d.agent.update("104 waiting 5 40 440 3800 210 30 Model_response |滑動畫面尋找相簿中的照片", 300);
+      if(page==17) d.agent.update("105 acting 6 40 440 3800 210 35 Drag |在畫布上繪製下一條線，並確認形狀是否正確", 300);
       d.animationMs=page==13?10000:500;
     }
     clicker::Screen(pixels.data()).render(page>=9?4:page<4?page:page==4?2:page==5?3:0,d);

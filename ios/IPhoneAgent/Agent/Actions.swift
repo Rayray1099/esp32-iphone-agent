@@ -8,7 +8,7 @@ enum Actions {
     }
 
     /// Bookkeeping keys that are not part of the action itself.
-    static let meta: Set<String> = ["t", "thought", "thought_zh", "think_s", "act_s", "shot", "_shot", "changed"]
+    static let meta: Set<String> = ["t", "thought", "thought_zh", "status_zh", "think_s", "act_s", "shot", "_shot", "changed"]
 
     /// action name -> argument names; numeric arguments are 0-1000 screen coordinates
     static let actions: [String: [String]] = [
@@ -52,6 +52,9 @@ enum Actions {
         var acts = try allGroups(#"^\s*DO\s*[:：]\s*(.*?)\s*$"#, in: text).map(parseCommand).prefix(6).map { $0 }
         guard !acts.isEmpty else { throw ParseError(message: "no DO line in reply: \(text.prefix(200))") }
         acts[0] = JObject([("thought", .str(thought ?? "")), ("thought_zh", .str(zh ?? ""))]).merging(acts[0])
+        if let status = firstGroup(#"^\s*STATUS\s*[:：]\s*(.*?)\s*$"#, in: text, multiline: true), !status.isEmpty {
+            acts[0]["status_zh"] = .str(status)
+        }
         return acts
     }
 

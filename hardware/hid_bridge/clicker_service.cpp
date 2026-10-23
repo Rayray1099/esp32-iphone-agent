@@ -704,6 +704,7 @@ String clicker_api(const String &path, const String &method, const String &body,
     auto *a = cJSON_AddObjectToObject(o.get(), "agent");
     cJSON_AddStringToObject(a, "phase", agent.phase);
     cJSON_AddStringToObject(a, "action", agent.action);
+    cJSON_AddStringToObject(a, "summary", agent.summary);
     cJSON_AddNumberToObject(a, "step", agent.step);
     cJSON_AddNumberToObject(a, "limit", agent.limit);
     cJSON_AddNumberToObject(a, "elapsed_s", agent.elapsed);

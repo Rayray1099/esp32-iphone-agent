@@ -4,12 +4,14 @@
 #include <cstring>
 #include <cstdlib>
 #include <cerrno>
+#include "utf8.h"
 namespace clicker {
 // Fixed-size telemetry, independent of the HID scheduler and profile storage.
 struct AgentProgress {
   uint32_t run = 0, atMs = 0, elapsed = 0;
   unsigned step = 0, limit = 0, frameMs = 0, modelMs = 0, hidMs = 0;
   char phase[16] = "idle", action[32] = "Ready";
+  char summary[97] = ""; // Optional public action summary, never raw reasoning.
   bool active() const {
     return run && std::strcmp(phase, "done") && std::strcmp(phase, "failed") &&
            std::strcmp(phase, "stopped") && std::strcmp(phase, "idle");
@@ -18,8 +20,8 @@ struct AgentProgress {
   bool stale(uint32_t now) const { return active() && uint32_t(now - atMs) >= 8000; }
   bool update(const char *line, uint32_t now) {
     AgentProgress next;
-    if (!line || std::strlen(line) >= 160) return false;
-    char text[160]; std::memcpy(text, line, std::strlen(line) + 1);
+    if (!line || std::strlen(line) >= 272) return false;
+    char text[272]; std::memcpy(text, line, std::strlen(line) + 1);
     char *parts[9], *p = text;
     for (auto &part : parts) {
       while (*p == ' ') ++p;
@@ -29,7 +31,12 @@ struct AgentProgress {
       if (*p) *p++ = 0;
     }
     while (*p == ' ') ++p;
-    if (*p || std::strlen(parts[1]) >= sizeof next.phase || std::strlen(parts[8]) >= sizeof next.action) return false;
+    if (*p) {
+      if (*p++ != '|') return false;
+      if (std::strlen(p) >= sizeof next.summary || !validSummary(p)) return false;
+      std::memcpy(next.summary, p, std::strlen(p) + 1);
+    }
+    if (std::strlen(parts[1]) >= sizeof next.phase || std::strlen(parts[8]) >= sizeof next.action) return false;
     const int positions[] = {0, 2, 3, 4, 5, 6, 7};
     uint32_t numbers[7];
     for (unsigned i = 0; i < 7; ++i) {

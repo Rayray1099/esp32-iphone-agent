@@ -19,9 +19,9 @@ import Foundation
     func start(task: String, runID: String, limit: Int, phase: AgentActivityAttributes.Phase = .running) {
         end(nil)
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return DebugLog.write("Live Activity: disabled in Settings") }
-        let line = phase == .recording ? String(localized: "Do the task yourself. I'm watching.")
+        let line = phase == .starting ? "準備中・AI 尚未開始操作" : phase == .recording ? String(localized: "Do the task yourself. I'm watching.")
             : String(localized: "Reading the screen…")
-        let status = phase == .recording
+        let status = phase == .starting ? IslandStatus(short: "準備中", full: line, look: nil, minimal: "準備") : phase == .recording
             ? IslandStatus(short: String(localized: "Watching you"), full: String(localized: "Watching you"), look: CGPoint(x: 0, y: 0.6))
             : IslandStatus.looking
         var state = State(mood: phase == .recording ? .listening : .thinking, step: 0, limit: limit, line: line,

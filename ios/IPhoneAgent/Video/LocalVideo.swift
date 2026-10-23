@@ -1,5 +1,22 @@
 import Foundation
 
+/// HTTP 503 means the board has no decodable source video. Changing transport cannot repair it.
+enum LocalVideoResponseError: LocalizedError {
+    case sourceUnavailable
+    case http(Int)
+    static func validate(status: Int) throws {
+        if status == 503 { throw Self.sourceUnavailable }
+        if status != 200 { throw Self.http(status) }
+    }
+    var errorDescription: String? {
+        switch self {
+        case .sourceUnavailable:
+            return "ESP32 已連上 AirPlay，但沒有可解碼畫面。請在控制中心停止螢幕鏡像輸出，再重新選擇 ESP32。AI 尚未開始操作。"
+        case .http(let code): return "ESP32 畫面服務回應 HTTP \(code)。"
+        }
+    }
+}
+
 /// Bounded incremental video response. Unit boundaries and capture times survive Wi-Fi.
 struct LocalVideoBatch {
     let generation: UInt32, next: UInt32

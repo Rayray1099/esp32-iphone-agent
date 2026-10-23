@@ -69,7 +69,11 @@ import UIKit
 
     /// Before a run: calibrate if needed and wait for it. True when the pointer is calibrated.
     func ensureCalibrated() async -> Bool {
-        while busy { try? await Task.sleep(nanoseconds: 200_000_000) }
+        while busy {
+            if Task.isCancelled { return false }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        if Task.isCancelled { return false }
         if !app.pointer.calibrated && boardReady { await run(why: String(localized: "before a run")) }
         return app.pointer.calibrated
     }

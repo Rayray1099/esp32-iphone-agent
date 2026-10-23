@@ -11,6 +11,7 @@ extension AppModel {
     /// The model is never asked to do this.
     func leaveApp() async -> Bool {
         for method in ["AssistiveTouch button 4", "cmd+h", "consumer home"] {
+            if Task.isCancelled { return false }
             if inBackground { return true }
             do {
                 switch method {
@@ -66,7 +67,7 @@ extension AppModel {
     private func waitForBackground(_ seconds: Double) async -> Bool {
         let deadline = now() + seconds
         while !inBackground {
-            if now() > deadline { return false }
+            if Task.isCancelled || now() > deadline { return false }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return true

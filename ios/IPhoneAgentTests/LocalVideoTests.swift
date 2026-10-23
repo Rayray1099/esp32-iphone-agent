@@ -4,6 +4,16 @@ import XCTest
 @testable import IPhoneAgent
 
 final class LocalVideoTests: XCTestCase {
+    func testMissingSourceHasAnActionableErrorRatherThanATransportFallback() {
+        XCTAssertNoThrow(try LocalVideoResponseError.validate(status: 200))
+        XCTAssertThrowsError(try LocalVideoResponseError.validate(status: 503)) { error in
+            guard case LocalVideoResponseError.sourceUnavailable = error else { return XCTFail("wrong error") }
+            XCTAssertTrue(error.localizedDescription.contains("重新選擇 ESP32"))
+        }
+        XCTAssertThrowsError(try LocalVideoResponseError.validate(status: 401)) { error in
+            guard case LocalVideoResponseError.http(401) = error else { return XCTFail("wrong error") }
+        }
+    }
     private func word(_ n: UInt32) -> [UInt8] { (0..<4).map { UInt8((n >> ($0 * 8)) & 255) } }
     private func batch(_ records: [(UInt32, UInt8, [UInt8])]) -> Data {
         var data = Array("S3VF".utf8) + word(7) + word(2) + word(UInt32(records.count))

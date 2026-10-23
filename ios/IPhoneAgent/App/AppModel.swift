@@ -48,8 +48,12 @@ import UIKit
     @Published var recovering: Recovery.Stage?  // the run is paused for a lost link (board, hotspot, mirroring)
     var recoverySince = Date()
     @Published var takingOver = false
-    @Published var departing = false  // the character's take-off before a run
     @Published var startingAgent = false
+    @Published var startupStage = AgentStartupStage.checking
+    @Published var startupFailure: String?
+    @Published var startupCancelled = false
+    var startupSince = Date()
+    var startupTask: Task<Void, Never>?
     /// A banner on Home: the app could not leave by itself (swipe up), or the run waits while the app is in front.
     @Published var homeHint: String?
     var resumeAsked = 0.0  // when Continue was tapped in the app
@@ -155,6 +159,7 @@ import UIKit
             MainActor.assumeIsolated { self?.metrics.enteredForeground(); DebugLog.write("app: foreground") }
         }
         if MockMode.on { startMock() }
+        if MockMode.on && ProcessInfo.processInfo.arguments.contains("-agent-startup-fixture") { tab = .agent }
         runs.reload()
         handleLaunchArguments()
         publishWidget()

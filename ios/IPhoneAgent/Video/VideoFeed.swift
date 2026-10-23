@@ -34,6 +34,7 @@ extension ScreenSource {
         let started = now()
         try? await Task.sleep(nanoseconds: UInt64(least * 1e9))
         while now() - updated < quiet + lag && now() - started < most {
+            if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
@@ -45,7 +46,7 @@ extension ScreenSource {
     func fresh(since: Double, timeout: Double = 0.8) async -> Data? {
         let deadline = now() + timeout
         while (capturedAt > 0 ? capturedAt : updated) <= since {
-            if now() > deadline { return nil }
+            if Task.isCancelled || now() > deadline { return nil }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return frame
@@ -76,6 +77,8 @@ extension ScreenSource {
     private var localVerifiedAt = 0.0
     private var decodedBoardMs: UInt32 = 0
     private var localActive = false
+    private var localSourceFailure: LocalVideoResponseError?
+    private var streamRevision = 0
     private(set) var transport = "BLE"
     private lazy var localSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -121,8 +124,9 @@ extension ScreenSource {
 
     /// The link (re)connected: chunk numbering starts over.
     func resetStream() {
+        streamRevision += 1
         localTask?.cancel(); localTask = nil; localActive = false
-        localGeneration = nil; localNext = 0; localVerifiedAt = 0; decodedBoardMs = 0
+        localGeneration = nil; localNext = 0; localVerifiedAt = 0; decodedBoardMs = 0; localSourceFailure = nil
         decoder.queue.async { [decoder] in decoder.reset() }
         assembler.reset(); clockOffset = nil
         frame = nil; capturedAt = 0; updated = 0; broken = true
@@ -173,6 +177,7 @@ extension ScreenSource {
             let deadline = now() + max(wait, 30)
             while localActive && now() < deadline {
                 try Task.checkCancellation()
+                if let localSourceFailure { throw localSourceFailure }
                 // AirPlay sends nothing for an unchanged screen. A recent board watermark
                 // proves that our decoded frame is still the newest captured image.
                 if !broken, frame != nil, localVerifiedAt > now() - 2,
@@ -222,15 +227,19 @@ extension ScreenSource {
     }
 
     func stream(_ on: Bool) async throws {
+        streamRevision += 1
+        let revision = streamRevision
         localTask?.cancel(); localTask = nil; localActive = false
+        localSourceFailure = nil
         if on, let channel = device as? CommandChannel,
            let response = try? await channel.send("video-auth", timeout: 5),
            let credentials = try? JSONDecoder().decode(LocalVideoCredentials.self, from: Data(response.utf8)),
            credentials.isLocal {
+            if on { try Task.checkCancellation() }
             try await device?.send("stream off")
             localGeneration = nil; localNext = 0; localVerifiedAt = 0
             localActive = true; transport = "Wi-Fi"; streamOn = true
-            localTask = Task { [weak self] in await self?.readLocalVideo(credentials) }
+            localTask = Task { [weak self] in await self?.readLocalVideo(credentials, revision: revision) }
             DebugLog.write("video: local Wi-Fi enabled; cellular disabled for video requests")
             return
         }
@@ -239,9 +248,10 @@ extension ScreenSource {
         streamOn = on
     }
 
-    private func readLocalVideo(_ credentials: LocalVideoCredentials) async {
+    private func readLocalVideo(_ credentials: LocalVideoCredentials, revision: Int) async {
         var failures = 0
-        while !Task.isCancelled && localActive {
+        var unavailableSince: Double?
+        while !Task.isCancelled && localActive && revision == streamRevision {
             do {
                 var components = URLComponents(url: credentials.url.appendingPathComponent("api/v1/video/frames"), resolvingAgainstBaseURL: false)!
                 components.queryItems = [URLQueryItem(name: "generation", value: String(localGeneration ?? UInt32.max)),
@@ -252,11 +262,14 @@ extension ScreenSource {
                 request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
                 let (data, response) = try await localSession.data(for: request)
                 try Task.checkCancellation()
-                guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                      let up = response.value(forHTTPHeaderField: "X-Board-Uptime-Ms").flatMap(Int.init),
+                guard revision == streamRevision else { return }
+                guard let response = response as? HTTPURLResponse else { throw DeviceError(message: "Invalid video response") }
+                try LocalVideoResponseError.validate(status: response.statusCode)
+                guard let up = response.value(forHTTPHeaderField: "X-Board-Uptime-Ms").flatMap(Int.init),
                       let latest = response.value(forHTTPHeaderField: "X-Video-Captured-Ms").flatMap(UInt32.init)
                 else { throw DeviceError(message: "Local video is not ready") }
                 let batch = try LocalVideoBatch(data)
+                localSourceFailure = nil; unavailableSince = nil
                 boardClock(ms: up)
                 if localGeneration != batch.generation {
                     frame = nil; capturedAt = 0; decodedBoardMs = 0; broken = true
@@ -279,8 +292,17 @@ extension ScreenSource {
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
             } catch is CancellationError { return }
+            catch LocalVideoResponseError.sourceUnavailable {
+                guard !Task.isCancelled, revision == streamRevision else { return }
+                broken = true; localVerifiedAt = 0
+                note = LocalVideoResponseError.sourceUnavailable.localizedDescription
+                if unavailableSince == nil { unavailableSince = now(); DebugLog.write("video: source unavailable (HTTP 503); awaiting IDR") }
+                // Allow a short IDR gap; BLE would replay the same missing source GOP.
+                if now() - (unavailableSince ?? now()) >= 5 { localSourceFailure = .sourceUnavailable; return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
             catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || revision != streamRevision { return }
                 failures += 1
                 let issue = error as NSError
                 note = "local video: \(issue.domain) \(issue.code): \(issue.localizedDescription)"
@@ -347,6 +369,7 @@ extension ScreenSource {
 
     /// The link dropped: the board forgets `stream on`.
     func linkLost() {
+        streamRevision += 1
         localTask?.cancel(); localTask = nil; localActive = false
         streamOn = false
     }

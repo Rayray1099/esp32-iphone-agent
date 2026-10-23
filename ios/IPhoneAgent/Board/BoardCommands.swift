@@ -139,6 +139,7 @@ extension BoardTransport {
         let name = String(command.split(separator: " ").first ?? "")
         await lock.lock()
         defer { lock.unlock() }
+        try Task.checkCancellation()  // A cancelled startup must not claim input after waiting behind another command.
         let started = now()
         let id = nextID
         nextID += 1

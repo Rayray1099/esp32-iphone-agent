@@ -5,7 +5,7 @@ import Foundation
 /// The Live Activity / Dynamic Island of a run or a demonstration recording: while the agent works the app
 /// is in the background, so this is the only thing the user sees.
 struct AgentActivityAttributes: ActivityAttributes {
-    enum Phase: String, Codable, Hashable { case running, help, recording }
+    enum Phase: String, Codable, Hashable { case starting, running, help, recording }
 
     struct ContentState: Codable, Hashable {
         var mood: Mood

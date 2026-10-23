@@ -75,7 +75,7 @@ extension AppModel {
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }
             ?? "none"
         let model = settings.isConfigured ? (settings.currentModel ?? "auto") : "not set"
-        let run = agent.running ? "running step \(agent.steps.count)" : "idle"
+        let run = startingAgent ? "preparing \(startupStage.title)" : agent.running ? "running step \(agent.steps.count)" : startupFailure.map { "start failed: " + $0 } ?? "idle"
         return "status: frames \(FrameMode.current.rawValue); board \(boardText); mirroring \(mirror); calibration \(cal) (\(calibrator.phase)); "
             + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height))"
     }

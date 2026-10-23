@@ -1,27 +1,39 @@
 import SwiftUI
 
-/// The character takes off before a run: a hop, then up and away (a fade under Reduce Motion).
-struct DepartureOverlay: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var gone = false
+/// A persistent status card: preparation must never look like an already running task.
+struct AgentRunStatus: View {
+    @ObservedObject var app: AppModel
+    @ObservedObject var agent: AgentLoop
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
-            VStack(spacing: Space.l) {
-                AgentFace(mood: .acting)
-                    .frame(width: 140, height: 157)
-                    .offset(y: gone && !reduceMotion ? -520 : 0)
-                    .scaleEffect(gone && !reduceMotion ? 0.6 : 1)
-                    .opacity(gone ? 0 : 1)
-                Text("See you later!").font(.title2.bold()).opacity(gone ? 0 : 1)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(app.startingAgent ? "準備啟動中" : agent.running ? "AI 執行中" : app.startupCancelled ? "已停止・啟動已取消" : "啟動失敗・尚未執行",
+                      systemImage: app.startingAgent ? "hourglass" : agent.running ? "play.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.title3.bold())
+                    .foregroundStyle(app.startupFailure != nil ? Palette.stop : app.startingAgent ? Palette.warning : Palette.ok)
+                    .accessibilityIdentifier("agentRunState")
+                Spacer()
+                if app.startingAgent {
+                    Text(app.startupSince, style: .timer).font(.caption.monospacedDigit())
+                }
+            }
+            if app.startingAgent {
+                ProgressView(value: app.startupStage.progress).tint(Palette.warning)
+                Text(verbatim: app.startupStage.title).font(.headline).accessibilityIdentifier("startupStage")
+                Text(verbatim: app.startupStage.detail).font(.subheadline).foregroundStyle(.secondary)
+            } else if let error = app.startupFailure {
+                Text(verbatim: error).font(.subheadline).textSelection(.enabled)
+                Button("檢查螢幕鏡像輸出") { app.setupPage = .see }.buttonStyle(.bordered)
+            } else if app.startupCancelled {
+                Text("AI 沒有開始操作。你可以調整任務後重新開始。")
+            } else {
+                Text("已完成準備；請從動態島查看目前步驟。返回此 App 時會暫停操作。")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
         }
-        .transition(.opacity)
-        .onAppear {
-            withAnimation(.easeIn(duration: 0.4).delay(0.35)) { gone = true }  // 0.75 s, inside the 0.8 s wait
-        }
-        .accessibilityLabel(Text("Starting"))
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
     }
 }
 

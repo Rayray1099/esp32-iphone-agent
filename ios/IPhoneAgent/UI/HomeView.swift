@@ -22,6 +22,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             List {
+                if app.startingAgent || agent.running || app.startupFailure != nil || app.startupCancelled {
+                    Section { AgentRunStatus(app: app, agent: agent) }
+                }
                 Section { hero }
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
@@ -35,6 +38,11 @@ struct HomeView: View {
                 intentSection
             }
             .listStyle(.insetGrouped)
+            .onAppear {
+                if MockMode.on && ProcessInfo.processInfo.arguments.contains("-agent-startup-fixture") {
+                    task = "Open Calculator"
+                }
+            }
             .refreshable {
                 pullingToRefresh = true
                 defer { pullingToRefresh = false }
@@ -80,7 +88,6 @@ struct HomeView: View {
             } message: {
                 Text("I'll tell you when a run is done or needs your help, since you won't see this app while I work.")
             }
-            .overlay { if app.departing { DepartureOverlay() } }
             .overlay(alignment: .top) {
                 if let hint = app.homeHint {
                     Label { Text(verbatim: hint) } icon: { Image(systemName: "arrow.up.to.line") }
@@ -93,7 +100,7 @@ struct HomeView: View {
             }
             .animation(.easeOut(duration: 0.25), value: app.homeHint)
             .overlay(alignment: .topTrailing) {  // right under the record button
-                if !agent.running {
+                if !agent.running && !app.startingAgent {
                     CalibrateButton(calibrator: app.calibrator, board: board, pointer: app.pointer)
                         .padding(.trailing, Space.l).padding(.top, Space.xs)
                 }
@@ -140,6 +147,8 @@ struct HomeView: View {
     }
 
     private var greeting: LocalizedStringKey {
+        if app.startingAgent { return "準備啟動中；下方會顯示目前進度。" }
+        if app.startupFailure != nil { return "啟動失敗，AI 尚未開始操作。請查看下方原因。" }
         if app.help != nil { return "I need your help with one step." }
         if app.recovering != nil { return "The connection dropped. I'll go on when it's back." }
         if recorder.recording { return "I'm watching. Do the task, then stop the recording." }
@@ -260,17 +269,19 @@ struct HomeView: View {
 
     private var bottomBar: some View {
         BottomBar {
-            if agent.running {
+            if agent.running || app.startingAgent {
                 Button {
                     Haptics.stop()
                     Task { await app.stopAgent() }
-                } label: { Label("Stop", systemImage: "stop.fill") }
+                } label: { Label(app.startingAgent ? "取消啟動" : "停止執行", systemImage: "stop.fill") }
                 .buttonStyle(BigButton(tint: Palette.stop))
+                .accessibilityIdentifier("stopAgent")
             } else {
                 Button { start(task) } label: { Label("Start", systemImage: "play.fill") }
                     .buttonStyle(BigButton())
+                    .accessibilityIdentifier("startAgent")
                     .disabled(task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || blocker != nil
-                              || app.departing || app.startingAgent || recorder.recording)
+                              || app.startingAgent || recorder.recording)
                 if let blocker {
                     Button { app.setupPage = blocker.page } label: {
                         Label(blocker.text, systemImage: "exclamationmark.circle").font(.footnote)

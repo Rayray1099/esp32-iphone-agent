@@ -112,7 +112,7 @@ private struct Buttons: View {
                     Label("Stop Recording", systemImage: "stop.fill").frame(maxWidth: .infinity)
                 }
                 .tint(.red)
-            case .running:
+            case .starting, .running:
                 Button(intent: StopAgentIntent()) { Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity) }
                     .tint(.red)
             }

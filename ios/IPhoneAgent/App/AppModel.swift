@@ -148,7 +148,7 @@ import UIKit
 
         timers.append(Task { [weak self] in await self?.board.commands.keepAwake(screenLive: {
             guard let self else { return false }
-            return feed.live && !agent.running && !startingAgent && !calibrator.busy && !probe.capturing
+            return self.feed.live && !self.agent.running && !self.startingAgent && !self.calibrator.busy && !self.probe.capturing
         }) })
         timers.append(Task { [weak self] in
             while !Task.isCancelled {

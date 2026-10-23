@@ -7,15 +7,16 @@ extension AppModel {
 
     private var inBackground: Bool { UIApplication.shared.applicationState == .background }
 
-    /// Leaves our own app without touching the screen: the board's Cmd+H, then its home flick as a fallback.
+    /// Verify that each Home method really backgrounds the app; a HID submission alone cannot prove it.
     /// The model is never asked to do this.
     func leaveApp() async -> Bool {
-        for method in ["cmd+h", "home swipe"] {
+        for method in ["cmd+h", "consumer home", "home bar"] {
             if inBackground { return true }
             do {
                 switch method {
                 case "cmd+h": try await pointer.key("cmd+h")
-                default: try await pointer.goHome()
+                case "consumer home": _ = try await board.commands.send("homescreen")
+                default: try await pointer.homeBar()
                 }
             } catch {
                 DebugLog.write("leave app: \(method) failed: \(error.localizedDescription)")

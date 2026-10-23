@@ -292,15 +292,18 @@ import Foundation
 
     func type(_ text: String) async throws { try await device.send("type \(text)") }
     func key(_ combo: String) async throws { try await device.send("key \(combo)") }
-    /// The board's consumer-control Home key ("AC Home"), which iOS treats like a keyboard's home key. Boards
-    /// without it (older firmware) answer an error: then Cmd+H and the flick up from the home bar (a flick, not
-    /// a rest: resting opens the app switcher).
+    /// iOS can accept a consumer report without taking its Home action. Clicking the bottom edge with
+    /// AssistiveTouch returns Home on iPhone; a slow mouse drag there opens the app switcher instead.
     func goHome() async throws {
-        if (try? await device.send("homescreen")) != nil { return }
+        _ = try? await device.send("homescreen")
         _ = try? await key("cmd+h")
         try await Task.sleep(nanoseconds: 350_000_000)
-        try await swipe(0.5, 0.995, 0.5, 0.45, hold: false)
-        pos = nil  // starting at the screen's edge may have clamped the pointer: re-home before the next move
+        try await homeBar()
+    }
+
+    func homeBar() async throws {
+        defer { pos = nil }  // the edge can clamp the pointer; re-home on the next move
+        try await tap(0.5, 1)
     }
     func goBack() async throws {
         try await swipe(0.005, 0.45, 0.6, 0.45, hold: false)

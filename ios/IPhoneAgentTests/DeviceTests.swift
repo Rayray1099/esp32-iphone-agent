@@ -129,6 +129,20 @@ import XCTest
         XCTAssertEqual(device.sent[2], "move 200 400")
     }
 
+    func testHomeFallsBackWhenTheHostAcceptsButIgnoresConsumerHome() async throws {
+        let device = FakeDevice()  // all submissions succeed; no host-side Home acknowledgement
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.goHome()
+        XCTAssertEqual(Array(device.sent.prefix(2)), ["homescreen", "key cmd+h"])
+        XCTAssertTrue(device.sent.contains("move 200 800"))
+        XCTAssertEqual(device.sent.last, "click")
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 2)  // edge invalidates tracked position
+    }
+
     func testShortStatusNotifyIsMergedWithTheFullRead() throws {
         let full = try XCTUnwrap(BoardStatus.decode(Data(#"{"up":1,"heap":81234,"usb":"ok","net":"ap","sta":2,"ap":"idle","kbps":180,"ble":{"mtu":247,"phy":2}}"#.utf8)))
         let short = try XCTUnwrap(BoardStatus.decode(Data(#"{"up":2,"usb":"asleep","net":"ap","ap":"streaming","ble":{"mtu":23}}"#.utf8)))

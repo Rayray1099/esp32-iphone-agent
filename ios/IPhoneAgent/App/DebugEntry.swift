@@ -69,7 +69,7 @@ extension AppModel {
     /// One line: board, mirroring, calibration, model and run.
     var statusSummary: String {
         let s = board.status
-        let boardText = board.connected ? "connected usb \(s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
+        let boardText = board.connected ? "connected output \(s?.output ?? "usb") hid \(s?.hid ?? s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
             : "not connected"
         let mirror = feed.live ? String(format: "live %.2f", feed.aspect) : "off"
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }

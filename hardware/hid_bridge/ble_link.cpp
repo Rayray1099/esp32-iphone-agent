@@ -253,9 +253,12 @@ static int onGap(ble_gap_event *e, void *) {  // NimBLEServerCallbacks has no da
 
 extern "C" uint16_t ble_hs_hci_avail_pkts;  // free controller ACL buffers (NimBLE host, ble_hs_hci.c)
 static uint16_t ctrlMax;                     // the controller's total, read at boot with no links up
+static std::atomic<bool> hidPriority{false};
+void ble_hid_priority(bool active) { hidPriority = active; }
 
 // Room for a video notify of n bytes in the controller: its ACL fragments plus those already in flight.
 static bool ctrlRoom(size_t n) {
+  if (hidPriority.load()) return false;
   if (ble_hs_hci_avail_pkts > ctrlMax) ctrlMax = ble_hs_hci_avail_pkts;
   bool cmds = millis() - lastCmdMs < CMD_ACTIVE_MS;
   int frags = (int)((n + 3 + 4 + 250) / 251), limit = cmds && VIDEO_CTRL_PKTS < ctrlMax ? VIDEO_CTRL_PKTS : ctrlMax;

@@ -139,7 +139,11 @@ String run(const String &line) {
 
   if (cmd == "ping") return "ok";
   if (!clicker_manual_begin()) return "err USB input busy";
-  struct ManualRelease { ~ManualRelease() { clicker_manual_end(clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT)); } } manualRelease;
+  ble_hid_priority(true);
+  struct ManualRelease { ~ManualRelease() {
+    clicker_manual_end(clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT));
+    ble_hid_priority(false);
+  } } manualRelease;
   if (clicker_bluetooth_output()) {
     if (!ble_mouse_connected()) return "err Bluetooth mouse not paired/subscribed";
     auto send = [](uint8_t buttons, int8_t x, int8_t y) {
@@ -254,6 +258,11 @@ String board(const String &line, const String &id) {
     return "ok";
   }
   if (cmd == "app" || cmd == "log") {  // debug relay: Mac -> app ("app run ...") and app -> Mac ("log ...")
+    // The app redacts secrets before relaying. Physical UART permits debugging
+    // with the PC radio off and without adding another BLE video subscriber.
+#if ARDUINO_USB_CDC_ON_BOOT
+    if (cmd == "log") Serial0.println("app " + arg);
+#endif
     ble_reply(cmd + " " + arg);         // every peer sees it; each side ignores lines it doesn't handle
     return "ok";
   }

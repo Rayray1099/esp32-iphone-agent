@@ -1,14 +1,15 @@
 name: iOS device IPA for local signing
 on:
   workflow_dispatch:
-  push:
-    branches: [feature/s3-offline-clicker]
-    paths: [.github/workflows/ios-device.yml, 'ios/**']
 permissions:
   contents: read
+concurrency:
+  group: ios-device-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   device:
     runs-on: macos-26
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ios
@@ -27,4 +28,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ESP32-Agent-unsigned-device-IPA
+          retention-days: 3
           path: ios/ESP32-Agent-unsigned.ipa

@@ -1,14 +1,30 @@
 name: CI
 on:
   push:
-    branches: [main, feature/s3-offline-clicker]
+    branches: [main]
+    paths: ['ios/**', 'hardware/**', 'server/**', 'tools/**', '.github/workflows/ci.yml']
   pull_request:
+    paths: ['ios/**', 'hardware/**', 'server/**', 'tools/**', '.github/workflows/ci.yml']
   workflow_dispatch:
+    inputs:
+      ios:
+        description: Run iPhone and iPad simulator tests (macOS runners)
+        type: boolean
+        default: true
+      firmware:
+        description: Build firmware and run ESP32 emulation
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   ios:
+    if: github.event_name == 'workflow_dispatch' && inputs.ios
     runs-on: macos-26
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +46,11 @@ jobs:
         with:
           name: ios-${{ matrix.device }}-test-results
           path: ios/build-sim/Logs/Test/*.xcresult
+          retention-days: 3
   firmware:
+    if: github.event_name == 'workflow_dispatch' && inputs.firmware
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - run: python3 tools/bootstrap.py && python3 tools/bundle_web.py
@@ -45,6 +64,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: s3-n8r8-firmware
+          retention-days: 3
           path: |
             hardware/idf/build/*.bin
             hardware/idf/build/bootloader/*.bin
@@ -56,6 +76,7 @@ jobs:
         run: make -C hardware/tests
   host:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
       - run: pip install cryptography pillow
@@ -63,9 +84,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: host-screen-fixtures
+          retention-days: 3
           path: output/screens/
   emulator:
+    if: github.event_name == 'workflow_dispatch' && inputs.firmware
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: ESP32-S3 CPU adapter emulation
@@ -83,9 +107,11 @@ jobs:
         if: always()
         with:
           name: s3-cpu-emulator-log
+          retention-days: 3
           path: output/emulator/
   server:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     strategy:
       matrix:
         python: ["3.10", "3.12"]

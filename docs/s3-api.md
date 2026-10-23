@@ -22,6 +22,7 @@ Query capabilities before using extensions on another firmware.
 | POST | pointer | command: home or move dx dy |
 | POST | input/claim, input/release | AI mode arbitration |
 | GET/PUT | input/output | Select usb or bluetooth while stopped |
+| PUT | device/label | BLE only: bind a short friendly name to the authenticated sender |
 | GET/PUT | network | Redacted status / Wi-Fi and enterprise config |
 | GET/PUT | tailscale | Redacted status / enrollment |
 | GET | logs, system/tasks | Bounded events / task and heap data |
@@ -75,6 +76,22 @@ by cps_basis; BLE submission is not proof that iOS accepted the tap. usb_cps
 stays zero in Bluetooth mode. Offline with USB disables both radios; offline
 with Bluetooth keeps BLE enabled and disables Wi-Fi. Use separate calibration
 IDs for USB and Bluetooth, since pointer acceleration can differ.
+
+Firmware 0.3.1 shows the HID target separately from subscribed controller apps.
+The native app sends device/label with {"name":"iPhone"} once per encrypted
+connection. Names are bounded to 24 printable ASCII characters for the TFT font;
+other names fall back to PHONE. The display appends only the last two bytes of
+the bonded Bluetooth identity, for example PHONE / 93:75. Labels belong to the
+sending connection and are cleared on disconnect; a controller cannot label
+another connected target. USB hosts appear as USB HOST because the HID device
+cannot obtain their operating-system device name. input/output includes the
+target label and controller count.
+
+Deleting a saved profile repairs the remembered selection: surviving selected
+profiles stay selected; otherwise the first available profile is selected. An
+empty store has an empty selection. The native bulk manager sends one confirmed
+DELETE per selected profile and refreshes after errors instead of blindly
+retrying an uncertain deletion. Stop/release is required before deletion.
 
 The CH340/UART and native CDC accept the same versioned debug protocol without
 the BLE response-size cap. tools/board_uart.py uses UART with reset lines off.

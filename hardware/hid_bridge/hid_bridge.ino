@@ -23,6 +23,8 @@
 
 const int STEP = 10;      // max pointer delta per report while moving
 const int STEP_MS = 8;    // report interval; constant pace keeps iOS acceleration predictable
+const int BLE_STEP_MS = 16; // iOS negotiates 15 ms; avoid alternating one/two queued moves per event
+const int BLE_SETTLE_MS = 150; // measured touch landings need host settling after a paced move
 const int HOME_REPORTS = 50;
 #ifndef DEBUG_SERIAL
 #define DEBUG_SERIAL 0  // 1: echo commands and the AirPlay handshake over USB serial
@@ -170,6 +172,8 @@ String run(const String &line) {
         if (!send(0, -127, -127)) return "err Bluetooth send failed";
         delay(2);
       }
+      delay(BLE_STEP_MS * 2); // let the host consume the final corner reports before movement
+      delay(BLE_SETTLE_MS);
       return "ok";
     }
     if (cmd == "move") {
@@ -177,8 +181,9 @@ String run(const String &line) {
         int x = constrain(a, -STEP, STEP);
         int y = x && !bluetoothButtons ? 0 : constrain(b, -STEP, STEP);
         if (!send(bluetoothButtons, x, y)) return "err Bluetooth send failed";
-        a -= x; b -= y; delay(STEP_MS);
+        a -= x; b -= y; delay(BLE_STEP_MS);
       }
+      delay(BLE_SETTLE_MS);
       return "ok";
     }
     if (cmd == "press" || cmd == "release")

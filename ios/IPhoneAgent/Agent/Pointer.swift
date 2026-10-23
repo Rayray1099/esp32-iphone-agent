@@ -156,7 +156,10 @@ import Foundation
     func point(_ x: Double, _ y: Double, aim: Bool = false) async throws {
         guard calibrated else { throw DeviceError(message: "pointer not calibrated") }
         try await moveTo(dx(x), dy(y))
-        if aim && screen != nil { try await self.aim(x, y) }
+        if aim {
+            guard screen?.live == true else { throw BlindError(reason: "精準點擊需要即時鏡像畫面，未送出點擊。") }
+            try await self.aim(x, y)
+        }
     }
 
     /// Video checks never change the touch calibration: iOS can reshape/snap its visible pointer on a

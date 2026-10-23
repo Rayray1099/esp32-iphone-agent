@@ -6,6 +6,10 @@ on:
         description: Run iPhone unit and UI tests before packaging
         type: boolean
         default: true
+      skip_ui_tests:
+        description: Skip UI tests already passed for this change
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -27,7 +31,9 @@ jobs:
         if: inputs.simulator_tests
         run: |
           sim=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devices"]; print(next(d["udid"] for devices in ds.values() for d in devices if d["name"].startswith("iPhone")))')
-          xcodebuild test -scheme IPhoneAgent -destination "platform=iOS Simulator,id=$sim" -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO
+          extra=()
+          if [ '${{ inputs.skip_ui_tests }}' = 'true' ]; then extra+=(-skip-testing:IPhoneAgentUITests); fi
+          xcodebuild test -scheme IPhoneAgent -destination "platform=iOS Simulator,id=$sim" -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO "${extra[@]}"
       - name: Build for physical iPhone and iPad
         run: |
           xcodebuild build -scheme IPhoneAgent -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build-device CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

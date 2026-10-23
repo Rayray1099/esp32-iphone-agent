@@ -33,7 +33,8 @@ import XCTest
         let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
-        let pointer = Pointer(device: device, calibrationFile: file, screen: FakeScreen())
+        let screen = FakeScreen()
+        let pointer = Pointer(device: device, calibrationFile: file, screen: screen)
         pointer.finishCalibration(x: 0.5, y: 0.25)
         do { try await pointer.tap(0.5, 0.5, aim: true); XCTFail("Unverified tap succeeded") }
         catch { XCTAssertTrue(error is DeviceError) }

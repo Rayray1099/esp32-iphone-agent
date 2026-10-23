@@ -40,6 +40,7 @@ extension Pointer: Gestures {}
     @Published var steps: [JObject] = []
     @Published private(set) var shots: [Int: Data] = [:]  // step index -> screenshot the model decided on
     @Published private(set) var running = false
+    private(set) var round = 0
     private var pointerAt = CGPoint.zero  // last pointer position (screen fractions)
     /// When the last gesture ended: the model never decides on a frame from before it.
     private(set) var lastActed = 0.0
@@ -80,6 +81,7 @@ extension Pointer: Gestures {}
         pointerAt = .zero
         lastActed = 0
         helpAsked = 0
+        round = 0
         if !traceStarted { trace?.start(task: task) }
         running = true
         job = Task { [weak self] in
@@ -248,6 +250,7 @@ extension Pointer: Gestures {}
 
     /// One see-think-act round (one or more actions). Returns true when the task is over.
     func step() async throws -> Bool {
+        round += 1
         var timing = Metrics.Step()
         let acts = try await nextActions()
         timing.llmMs = (acts[0].act["think_s"]?.double ?? 0) * 1000

@@ -13,13 +13,21 @@ int main(int argc,char** argv){
   d.target="IPHONE / A1:B2";d.controllers=1;d.inputConnected=true;d.output="BT";
   assert(std::strcmp(d.runState(),"CLICKING")==0);
   assert(d.stateColor()==0x6ff3);
-  for(int page=0;page<9;++page){
+  for(int page=0;page<14;++page){
     if(page==4){d.running=false;d.error="EAP CERTIFICATE MISMATCH";}
     if(page==5){d.ota="INVALID SIGNATURE";}
     if(page==6){d.running=false;assert(std::strcmp(d.runState(),"STOPPED")==0);assert(d.stateColor()==0xfdc6);}
     if(page==7){d.inputConnected=false;d.target="NO TARGET";assert(std::strcmp(d.runState(),"NO TARGET")==0);assert(d.stateColor()==0xfa6b);}
     if(page==8){d.releasing=true;assert(std::strcmp(d.runState(),"STOPPING")==0);assert(d.stateColor()==0xfc6e);}
-    clicker::Screen(pixels.data()).render(page<4?page:page==4?2:page==5?3:0,d);
+    if(page>=9) {
+      d.target="IPHONE / A1:B2";
+      d.agent.update("100 thinking 7 40 440 3800 210 84 Choose_action", 100);
+      if(page==10) d.agent.update("100 acting 8 40 440 3800 210 85 Tap", 200);
+      if(page==11) d.agent.update("100 done 8 40 440 3800 210 87 Completed", 300);
+      if(page==12) d.agent.update("101 failed 8 40 440 3800 210 87 Run_error", 300);
+      d.animationMs=page==13?10000:500;
+    }
+    clicker::Screen(pixels.data()).render(page>=9?4:page<4?page:page==4?2:page==5?3:0,d);
     char name[32];snprintf(name,sizeof name,"tft-%d.ppm",page);auto file=folder/name;std::ofstream out(file,std::ios::binary);out<<"P6\n320 240\n255\n";
     for(auto color:pixels){char rgb[]={char(((color>>11)&31)*255/31),char(((color>>5)&63)*255/63),char((color&31)*255/31)};out.write(rgb,3);}
   }

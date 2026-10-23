@@ -17,6 +17,8 @@ import UIKit
     let board = BoardLink(mock: MockMode.on)
     let feed = VideoFeed()
     let metrics = Metrics()
+    var boardProgress = BoardAgentProgress()
+    var boardProgressFinishedAt = 0.0
     let traces = MockMode.on
         ? TraceStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("demo-traces"))
         : TraceStore()
@@ -167,6 +169,7 @@ import UIKit
 
     /// Every second: metrics; a suspension note; the stream's numbers every 10 s while a run goes.
     private func tick() {
+        if boardProgress.run != 0 { sendBoardProgress() }
         let before = metrics.suspensions, gap = now() - lastTick
         metrics.tick()
         lastTick = now()

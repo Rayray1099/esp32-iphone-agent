@@ -86,6 +86,7 @@ static void renderTask(void *) {
       error = networkError;
     String qr = "WIFI:T:WPA;S:" + ssid + ";P:" + pass + ";;";
     clicker::ScreenData d;
+    d.agent = agent_progress_snapshot();
     d.profile = name.c_str();
     d.network = net.c_str();
     d.ip = ip.c_str();
@@ -130,6 +131,7 @@ static void renderTask(void *) {
     }
     memcpy(d.history, history, sizeof(history));
     int page = s.running || net == "off" ? 0 : (millis() / 7000) % 4;
+    if (!s.running && d.agent.visible(millis())) page = 4;
     if (update != "idle")
       page = 3;
     if (page == 3)

@@ -15,6 +15,7 @@ extension AppModel {
     }
 
     func recover(_ stage: Recovery.Stage?) {
+        setBoardProgress(stage == nil ? "looking" : "retrying", action: stage == nil ? "Read_screen" : "Reconnect")
         let was = recovering
         recovering = stage
         guard let stage else {

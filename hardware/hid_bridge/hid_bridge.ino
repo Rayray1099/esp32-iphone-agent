@@ -276,6 +276,9 @@ String board(const String &line, const String &id) {
     return "ok";
   }
   if (cmd == "app" || cmd == "log") {  // debug relay: Mac -> app ("app run ...") and app -> Mac ("log ...")
+    // Compact machine telemetry, never interpret free-form logs as run status.
+    if (cmd == "log" && arg.startsWith("@agent "))
+      agent_progress_update(arg.substring(7));
     // The app redacts secrets before relaying. Physical UART permits debugging
     // with the PC radio off and without adding another BLE video subscriber.
 #if ARDUINO_USB_CDC_ON_BOOT

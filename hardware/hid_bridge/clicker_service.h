@@ -1,5 +1,6 @@
 #pragma once
 #include "src/clicker/engine.h"
+#include "src/clicker/agent_progress.h"
 #include <Arduino.h>
 void clicker_begin();
 String clicker_command(const String &line); // empty means legacy command
@@ -28,6 +29,8 @@ String controller_token();
 void controller_begin();
 void display_begin();
 void display_poll();
+bool agent_progress_update(const String &line);
+clicker::AgentProgress agent_progress_snapshot();
 bool display_bmp(void *req);
 void remote_poll();
 void remote_stop();

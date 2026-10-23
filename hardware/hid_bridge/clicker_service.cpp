@@ -700,6 +700,17 @@ String clicker_api(const String &path, const String &method, const String &body,
     cJSON_AddStringToObject(o.get(), "error", lastError.c_str());
     cJSON_AddStringToObject(o.get(), "profile",
                             clicker_selected_name().c_str());
+    auto agent = agent_progress_snapshot();
+    auto *a = cJSON_AddObjectToObject(o.get(), "agent");
+    cJSON_AddStringToObject(a, "phase", agent.phase);
+    cJSON_AddStringToObject(a, "action", agent.action);
+    cJSON_AddNumberToObject(a, "step", agent.step);
+    cJSON_AddNumberToObject(a, "limit", agent.limit);
+    cJSON_AddNumberToObject(a, "elapsed_s", agent.elapsed);
+    cJSON_AddNumberToObject(a, "frame_ms", agent.frameMs);
+    cJSON_AddNumberToObject(a, "model_ms", agent.modelMs);
+    cJSON_AddNumberToObject(a, "hid_ms", agent.hidMs);
+    cJSON_AddBoolToObject(a, "stale", agent.stale(millis()));
     cJSON_AddItemToObject(o.get(), "network",
                           cJSON_Parse(net_status_json().c_str()));
     cJSON_AddItemToObject(o.get(), "tailscale",

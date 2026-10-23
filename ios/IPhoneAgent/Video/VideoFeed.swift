@@ -31,6 +31,10 @@ extension ScreenSource {
     /// Wait until the screen stops changing (AirPlay only sends frames on change). Mid-animation frames are big and
     /// can reach us late over BLE, so a gap is only "quiet" once it also covers the last frame's transport lag.
     func settled(quiet: Double = 0.5, least: Double = 0.3, most: Double = 4) async {
+        if let feed = self as? VideoFeed, feed.transport == "Wi-Fi" {
+            await feed.settledLocally(quiet: quiet, least: least, most: most)
+            return
+        }
         let started = now()
         try? await Task.sleep(nanoseconds: UInt64(least * 1e9))
         while now() - updated < quiet + lag && now() - started < most {
@@ -79,6 +83,7 @@ extension ScreenSource {
     private var localActive = false
     private var localSourceFailure: LocalVideoResponseError?
     private var streamRevision = 0
+    private var stability = FrameStability()
     private(set) var transport = "BLE"
     private lazy var localSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -130,6 +135,7 @@ extension ScreenSource {
         decoder.queue.async { [decoder] in decoder.reset() }
         assembler.reset(); clockOffset = nil
         frame = nil; capturedAt = 0; updated = 0; broken = true
+        stability = FrameStability()
     }
 
     /// A board timestamp (status `up`, or a streamed unit) just arrived: keep the smallest offset.
@@ -148,6 +154,11 @@ extension ScreenSource {
         let capture = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? now()
         guard capture >= capturedAt else { return }  // a replay must never move the screen backwards
         frame = f.jpeg
+        if localActive, let image = Vision.image(f.jpeg) {
+            // Exclude status-bar/Live Activity animation. About 4 KiB per frame.
+            let sample = Vision.gray(image, 48, 96)
+            stability.observe(Array(sample.px.dropFirst(48 * 6)), at: now())
+        }
         updated = now()
         capturedAt = capture
         decodedBoardMs = f.unit.boardMs
@@ -160,6 +171,17 @@ extension ScreenSource {
 
     /// The app asked the board to forward the stream (`stream on`).
     private(set) var streamOn = false
+
+    func settledLocally(quiet: Double, least: Double, most: Double) async {
+        let began = now()
+        while now() - began < most {
+            if Task.isCancelled { return }
+            if now() - began >= least, !broken,
+               stability.quiet(at: now(), for: quiet), localVerifiedAt > now() - 2,
+               decodedBoardMs == localLatestMs { return }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+    }
 
     /// Seconds a snap may take: the buffered GOP over the measured BLE rate, doubled, at least 8 s.
     var snapTimeout: Double {
@@ -273,6 +295,7 @@ extension ScreenSource {
                 boardClock(ms: up)
                 if localGeneration != batch.generation {
                     frame = nil; capturedAt = 0; decodedBoardMs = 0; broken = true
+                    stability = FrameStability()
                 }
                 localGeneration = batch.generation; localNext = batch.next
                 localLatestMs = latest; localVerifiedAt = now()
@@ -326,8 +349,22 @@ extension ScreenSource {
     func afterAction(since: Double) async throws {
         do {
             if localActive {
-                await settled()
-                if await newer(than: since, timeout: 4) && !broken { return }
+                // Check freshness first; unchanged/animated transports no longer
+                // force two consecutive generic four-second settle windows.
+                if !(await newer(than: since, timeout: 1.2)) || broken {
+                    try Task.checkCancellation()
+                    let probeAt = now()
+                    try await device?.send("move 1 0")
+                    try await device?.send("move -1 0")
+                    guard await newer(than: probeAt, timeout: 4), !broken else {
+                        throw BlindError(reason: "ESP32 未傳回操作後的新畫面，已停止以避免誤觸。")
+                    }
+                }
+                await settledLocally(quiet: 0.4, least: 0.25, most: 4)
+                try Task.checkCancellation()
+                _ = try await currentFrame(wait: 2)
+                guard capturedAt >= since else { throw BlindError() }
+                return
             }
             if FrameMode.current == .snap {
                 try await Task.sleep(nanoseconds: 700_000_000)
@@ -349,7 +386,8 @@ extension ScreenSource {
                 DebugLog.write("frame: no capture after the action/probe; requesting current GOP")
                 try await snap()
             }
-        } catch {
+        } catch is CancellationError { throw CancellationError() }
+        catch {
             DebugLog.write("frame after action failed: \(error.localizedDescription)")
         }
         guard !broken, capturedAt >= since else {
@@ -362,6 +400,7 @@ extension ScreenSource {
         let deadline = now() + timeout
         while capturedAt < t {
             if now() > deadline { return false }
+            if Task.isCancelled { return false }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         return true

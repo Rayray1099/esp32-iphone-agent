@@ -35,6 +35,8 @@ import Foundation
     private var lastIDR: Double?
     private var lastTick = now()
     private var lastStatus: Double?
+    private(set) var runStepCount = 0
+    func beginRun() { steps = []; runStepCount = 0 }
 
     func status(_ s: BoardStatus) {
         board = s
@@ -62,8 +64,9 @@ import Foundation
         llmTotalMs = total * 1000
     }
     func step(_ s: Step) {
+        runStepCount += 1
         steps = Array((steps + [s]).suffix(40))
-        DebugLog.write(String(format: "step %d timing: frame %.0f ms, LLM %.0f ms, HID %.0f ms", steps.count, s.frameMs,
+        DebugLog.write(String(format: "step %d timing: frame %.0f ms, LLM %.0f ms, HID %.0f ms", runStepCount, s.frameMs,
                               s.llmMs, s.hidMs))
     }
 

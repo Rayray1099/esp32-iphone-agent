@@ -18,6 +18,8 @@ extension AppModel {
         startupCancelled = false
         startupSince = Date()
         startupStage = .checking
+        metrics.beginRun()
+        beginBoardProgress()
         runMood = nil
         review = nil
         defer { startingAgent = false; startupTask = nil }
@@ -116,6 +118,7 @@ extension AppModel {
             let reason = cancelled ? "已取消啟動；AI 沒有開始操作。" : error.localizedDescription
             startupFailure = cancelled ? nil : reason
             startupCancelled = cancelled
+            setBoardProgress(cancelled ? "stopped" : "failed", action: cancelled ? "Cancelled" : "Startup_error")
             say(cancelled ? "start cancelled" : "cannot start: \(reason)")
             if traced {
                 traces.write(feed.frame, kind: "step", ["action": .str(cancelled ? "stopped" : "error"),
@@ -135,6 +138,7 @@ extension AppModel {
     }
 
     private func setStartupStage(_ stage: AgentStartupStage) {
+        setBoardProgress("preparing", action: "Prepare_video")
         startupStage = stage
         live.update(mood: .thinking, step: 0, line: stage.title, phase: .starting,
                     status: IslandStatus(short: "準備中", full: stage.title, look: nil, minimal: "準備"))
@@ -142,6 +146,7 @@ extension AppModel {
 
     /// Emergency stop: cancel the agent and release the mouse button.
     func stopAgent() async {
+        setBoardProgress("stopping", action: "Release_input")
         if let startupTask {
             startupStage = .stopping
             startupTask.cancel()
@@ -189,6 +194,7 @@ extension AppModel {
 
     /// Between steps: what the character says in the Dynamic Island and where its eyes go.
     func doing(_ d: AgentLoop.Doing) {
+        showBoardDoing(d)
         guard agent.running, help == nil else { return }
         switch d {
         case .looking: live.show(.looking, mood: .thinking)
@@ -240,6 +246,9 @@ extension AppModel {
     }
 
     func agentFinished() {
+        let end = agent.steps.last?["action"]?.str ?? "error"
+        setBoardProgress(end == "done" ? "done" : end == "stopped" ? "stopped" : "failed",
+                         action: end == "done" ? "Completed" : end == "stopped" ? "Stopped" : "Run_error")
         ended()
         if let last = agent.steps.last { say("finished: \(last["action"]?.str ?? "") \(last["reason"]?.str ?? last["answer"]?.str ?? "")") }
         Task {
@@ -290,6 +299,7 @@ extension AppModel {
 
     /// The agent is stuck: pause, tell the user (Live Activity + notification) and wait for their choice.
     func needsHelp(_ reason: String) async -> AgentLoop.HelpChoice {
+        setBoardProgress("help", action: "Needs_help")
         help = reason.isEmpty ? String(localized: "I'm stuck on this step.") : reason
         runMood = .failure
         let line = String(localized: "Needs your help: \(help ?? "")")

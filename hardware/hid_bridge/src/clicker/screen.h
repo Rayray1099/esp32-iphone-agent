@@ -1,11 +1,13 @@
 #pragma once
 #include "../qrcode/qrcodegen.h"
 #include "smooth_font.h"
+#include "agent_progress.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 namespace clicker {
 struct ScreenData {
+  AgentProgress agent;
   const char *profile = "No saved profile";
   const char *network = "offline";
   const char *ip = "";
@@ -54,9 +56,43 @@ public:
     }
     smooth(40, 13, "PULSE", font14, white);
     const char *titles[] = {"LIVE", "LINK", "SYSTEM", "SETUP"};
-    if (page != 0) smooth(249, 15, titles[page % 4], font11, muted);
+    if (page != 0) smooth(249, 15, page == 4 ? "AGENT" : titles[page % 4], font11, muted);
     char b[96];
-    if (page == 0) {
+    if (page == 4) {
+      const auto &a = d.agent;
+      bool stale = a.stale(d.animationMs);
+      bool failed = !std::strcmp(a.phase, "failed");
+      bool done = !std::strcmp(a.phase, "done");
+      const uint16_t state = stale || failed ? 0xfa6b : done ? mint : a.active() ? cyan : 0xfdc6;
+      smooth(18, 43, stale ? "App link lost" : done ? "Completed" : failed ? "Failed" :
+             !std::strcmp(a.phase, "stopped") ? "Stopped" : "AI running", font26, state);
+      smooth(19, 78, d.target, font11, muted, 284);
+      fill(18, 98, 284, 1, 0x1947);
+      snprintf(b, sizeof b, "%02u", a.step);
+      smooth(16, 99, b, font58, cyan);
+      smooth(128, 112, "STEP", font14, white);
+      snprintf(b, sizeof b, "of %u max", a.limit);
+      smooth(128, 134, b, font11, muted);
+      snprintf(b, sizeof b, "%lu:%02lu", (unsigned long)(a.elapsed / 60), (unsigned long)(a.elapsed % 60));
+      smooth(236, 117, b, font18, white, 76);
+      char stage[64];
+      snprintf(stage, sizeof stage, "%s / %s", a.phase, a.action);
+      for (char *p = stage; *p; ++p) if (*p == '_') *p = ' ';
+      smooth(18, 166, stage, font14, state, 284);
+      const char *labels[] = {"SCREEN", "MODEL", "INPUT"};
+      const unsigned times[] = {a.frameMs, a.modelMs, a.hidMs};
+      for (int i = 0; i < 3; ++i) {
+        int x = 18 + i * 98;
+        smooth(x, 190, labels[i], font11, muted);
+        snprintf(b, sizeof b, "%.1fs", times[i] / 1000.0);
+        smooth(x + 50, 190, b, font11, white, 46);
+      }
+      if (a.active() && !stale) {
+        int pulse = int(d.animationMs / 60 % 278);
+        rounded(18, 208, 284, 2, 1, 0x1947);
+        rounded(18 + pulse, 207, 6, 4, 2, cyan);
+      }
+    } else if (page == 0) {
       const uint16_t stateColor = d.stateColor();
       const char *title = d.releasing ? "Stopping" : d.running ? "Clicking" : d.inputConnected ? "Stopped" : "Disconnected";
       rounded(207, 13, 95, 21, 10, 0x1126);
@@ -115,6 +151,10 @@ public:
       smooth(18, 222, d.profile, font11, muted, 208);
       rounded(247, 226, 4, 4, 2, d.controllers ? mint : muted);
       snprintf(b, sizeof b, "%u app", d.controllers); smooth(260, 222, b, font11, muted);
+    } else if (page == 4) {
+      smooth(18, 222, d.agent.stale(d.animationMs) ? "Check app connection" :
+             d.agent.active() ? "AI owns pointer" : "Run finished", font11, muted, 200);
+      smooth(240, 222, d.output, font11, cyan, 62);
     } else {
       smooth(18, 222, d.runState(), font11, d.stateColor(), 86);
       smooth(111, 222, "BOOT 1s start / press stop", font11, muted);

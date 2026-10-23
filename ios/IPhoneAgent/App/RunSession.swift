@@ -40,7 +40,10 @@ extension AppModel {
             if MockMode.on {
                 if ProcessInfo.processInfo.arguments.contains("-mock-startup-delay") {
                     setStartupStage(.video)
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    // UI automation can spend several seconds collecting a screenshot
+                    // before it taps Stop. Keep the cancellation fixture pending.
+                    let seconds: UInt64 = ProcessInfo.processInfo.arguments.contains("-mock-startup-failure") ? 3 : 30
+                    try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 }
                 if ProcessInfo.processInfo.arguments.contains("-mock-startup-failure") {
                     throw LocalVideoResponseError.sourceUnavailable

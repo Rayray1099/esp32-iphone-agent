@@ -20,7 +20,7 @@ final class AgentStartupUITests: XCTestCase {
         shot.name = "Preparing is explicit and cancellable"; shot.lifetime = .keepAlways; add(shot)
         app.buttons["stopAgent"].tap()
         XCTAssertTrue(app.staticTexts["已停止・啟動已取消"].waitForExistence(timeout: 5))
-        // Beyond the simulated video wait, a cancelled startup must still be stopped.
+        // Cancellation must stay stopped after cleanup and task propagation.
         let running = app.staticTexts["AI 執行中"]
         let neverRuns = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: running)
         XCTAssertEqual(XCTWaiter.wait(for: [neverRuns], timeout: 4), .timedOut)

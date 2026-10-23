@@ -29,3 +29,25 @@ if text.count(before) == 1:
 elif text.count(after) != 1:
     raise SystemExit("Pinned OpenH264 FlushFrame source differs; review patch before building")
 print("OpenH264 single-thread flush ownership patch verified")
+
+# MMCO 3/6 carry long_term_frame_idx, while long_term_pic_num exists only
+# for MMCO 2. For progressive pictures LongTermPicNum = LongTermFrameIdx.
+# Leaving the unused operand at zero silently selects the wrong CABAC reference.
+path = Path(sys.argv[1]) / "codec/decoder/core/src/manage_dec_ref.cpp"
+text = path.read_text()
+for before, after in [
+    (
+        "MarkAsLongTerm (pRefPic, iShortFrameNum, iLongTermFrameIdx, uiLongTermPicNum);",
+        "MarkAsLongTerm (pRefPic, iShortFrameNum, iLongTermFrameIdx, (uint32_t)iLongTermFrameIdx);",
+    ),
+    (
+        "AddLongTermToList (pRefPic, pCtx->pDec, iLongTermFrameIdx, uiLongTermPicNum);",
+        "AddLongTermToList (pRefPic, pCtx->pDec, iLongTermFrameIdx, (uint32_t)iLongTermFrameIdx);",
+    ),
+]:
+    if text.count(before) == 1:
+        text = text.replace(before, after)
+    elif text.count(after) != 1:
+        raise SystemExit("Pinned OpenH264 long-term reference source differs; review patch before building")
+path.write_text(text)
+print("OpenH264 progressive long-term reference numbering patch verified")

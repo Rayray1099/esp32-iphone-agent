@@ -11,6 +11,11 @@ uses the threaded picture-buffer fallback while draining a single-thread frame.
 Without its actual decoder context the display reference is never decremented
 and sustained High-profile streaming exhausts the picture pool (status 16384).
 A 120-picture regression verifies immediate output and capture timestamps.
+The build also fixes progressive long-term reference numbering for MMCO 3/6.
+AirPlay uses these references; upstream assigns the unused MMCO 2 operand instead
+of LongTermFrameIdx, silently reconstructing stale blocks in High-profile CABAC
+video despite status zero. A synthetic four-picture test checks decoded pixels
+against an independently decoded RGB reference, including replacement of index 1.
 
 Local video requests disable cellular access, use only private
 IPv4 addresses received from the paired board, and reject redirects. Model requests

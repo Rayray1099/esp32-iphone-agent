@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 import XCTest
 @testable import IPhoneAgent
 
@@ -71,5 +73,41 @@ final class LocalVideoTests: XCTestCase {
         }
         XCTAssertEqual(frames, 120)
         XCTAssertEqual(decoder.width, 64); XCTAssertEqual(decoder.height, 64)
+    }
+
+    func testCABACLongTermReferencesMatchIndependentPixelReference() throws {
+        let bundle = Bundle(for: Self.self)
+        let stream = try Data(contentsOf: XCTUnwrap(bundle.url(forResource: "cabac-long-term", withExtension: "h264")))
+        let expected = try Data(contentsOf: XCTUnwrap(bundle.url(forResource: "cabac-long-term", withExtension: "rgb")))
+        let decoder = SoftwareH264()
+        var pictures = 0
+        for nal in annexBUnits(stream) {
+            let type = nal.first! & 31
+            let jpeg = decoder.decode(Data([0,0,0,1]) + nal, timestamp: UInt64(1000 + pictures * 100),
+                                      jpegQuality: 1, emit: true)
+            XCTAssertEqual(decoder.lastStatus, 0)
+            guard type == 1 || type == 5 else { continue }
+            let imageData = try XCTUnwrap(jpeg)
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(imageData as CFData, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            let context = try XCTUnwrap(CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8,
+                                                bytesPerRow: 32 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 32, height: 32))
+            let actual = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            var totalError = 0
+            for pixel in 0..<(32 * 32) {
+                for channel in 0..<3 {
+                    totalError += abs(Int(actual[pixel * 4 + channel]) - Int(expected[(pictures * 32 * 32 + pixel) * 3 + channel]))
+                }
+            }
+            // The old decoder reports status zero but substitutes reference zero,
+            // yielding visible stale blocks (mean RGB error > 5 on picture 4).
+            XCTAssertLessThan(Double(totalError) / Double(32 * 32 * 3), 3, "picture \(pictures)")
+            XCTAssertEqual(decoder.outputTimestamp, UInt64(1000 + pictures * 100))
+            pictures += 1
+        }
+        XCTAssertEqual(pictures, 4)
+        XCTAssertEqual(expected.count, 4 * 32 * 32 * 3)
     }
 }

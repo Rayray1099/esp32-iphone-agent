@@ -49,4 +49,27 @@ final class LocalVideoTests: XCTestCase {
         XCTAssertNotNil(image); XCTAssertEqual(decoder.width, 32); XCTAssertEqual(decoder.height, 32)
         XCTAssertEqual(decoder.outputTimestamp, 123)
     }
+    func testQuietHighProfileFramesReleaseDisplayReferencesAndKeepTimestamps() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "interframes", withExtension: "h264"))
+        let nals = annexBUnits(try Data(contentsOf: url))
+        let decoder = SoftwareH264()
+        var frames = 0
+        for nal in nals {
+            let type = nal.first! & 31
+            let isPicture = type == 1 || type == 5
+            let timestamp = UInt64(1000 + frames * 100)
+            let image = decoder.decode(Data([0,0,0,1]) + nal, timestamp: timestamp,
+                                       jpegQuality: 0.6, emit: true)
+            XCTAssertEqual(decoder.lastStatus, 0, "picture \(frames)")
+            if isPicture {
+                // Each quiet picture must be available without a later packet,
+                // even after the decoder's reference pool would have filled.
+                XCTAssertNotNil(image, "picture \(frames)")
+                XCTAssertEqual(decoder.outputTimestamp, timestamp)
+                frames += 1
+            }
+        }
+        XCTAssertEqual(frames, 120)
+        XCTAssertEqual(decoder.width, 64); XCTAssertEqual(decoder.height, 64)
+    }
 }

@@ -6,6 +6,11 @@ command and HID transport and is the video fallback. OpenH264 2.6.0 performs CPU
 decoding and JPEG conversion inside the app, including while another app is in front.
 Run bash ios/tools/build_openh264.sh before XcodeGen. The build pins source commit
 652bdb7719f30b52b08e506645a7322ff1b2cc6f and bundles its BSD license.
+The build applies a checked single-thread FlushFrame ownership patch: upstream
+uses the threaded picture-buffer fallback while draining a single-thread frame.
+Without its actual decoder context the display reference is never decremented
+and sustained High-profile streaming exhausts the picture pool (status 16384).
+A 120-picture regression verifies immediate output and capture timestamps.
 
 Local video requests disable cellular access, use only private
 IPv4 addresses received from the paired board, and reject redirects. Model requests

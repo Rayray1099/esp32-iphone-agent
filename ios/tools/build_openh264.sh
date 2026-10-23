@@ -9,6 +9,7 @@ if [ ! -d "$root/source/.git" ]; then
 fi
 git -C "$root/source" checkout --detach "$revision"
 test "$(git -C "$root/source" rev-parse HEAD)" = "$revision"
+python3 tools/patch_openh264.py "$root/source"
 # Explicit targets handle arm64 simulators. Generated files stay outside tracked sources.
 cat > "$root/source/build/platform-codex-ios.mk" <<'EOF'
 include $(SRC_PATH)build/platform-darwin.mk

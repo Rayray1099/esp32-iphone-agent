@@ -195,6 +195,27 @@ Profile *allocProfile() {
       heap_caps_malloc(sizeof(Profile), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   return p ? new (p) Profile : nullptr;
 }
+void repairSelectionAfterDelete() {
+  JSON previous = parse(selectedGroup);
+  JSON remaining(cJSON_CreateArray(), cJSON_Delete);
+  auto *p = allocProfile();
+  if (!p) { selectedName = "No saved profile"; selectedGroup = "[]"; return; }
+  for (int i = 0; i < cJSON_GetArraySize(previous.get()); ++i) {
+    auto *id = cJSON_GetArrayItem(previous.get(), i);
+    if (cJSON_IsNumber(id) && id->valueint >= 0 && id->valueint < 32 && load(id->valueint, *p))
+      cJSON_AddItemToArray(remaining.get(), cJSON_CreateNumber(id->valueint));
+  }
+  if (!cJSON_GetArraySize(remaining.get()))
+    for (int id = 0; id < 32; ++id)
+      if (load(id, *p)) { cJSON_AddItemToArray(remaining.get(), cJSON_CreateNumber(id)); break; }
+  auto *first = cJSON_GetArrayItem(remaining.get(), 0);
+  selection = first ? first->valueint : 0;
+  selectedName = first && load(selection, *p) ? p->name : "No saved profile";
+  selectedGroup = jsonText(remaining.get());
+  prefs.putUChar("selected", selection);
+  prefs.putString("group", selectedGroup);
+  free(p);
+}
 bool decodeProfile(cJSON *j, Profile &p) {
   uint32_t schema;
   if (!cJSON_IsObject(j) || !number(j, "schema", 1, 1, schema, 1))
@@ -607,7 +628,7 @@ String clicker_api(const String &path, const String &method, const String &body,
   if (path == "capabilities")
     return "{\"api\":1,\"board\":\"s3-n8r8-st7789\",\"profiles\":32,\"points\":"
            "1000,\"schedules\":16,\"timing_us\":1,\"usb_poll_us\":1000,"
-           "\"version\":\"0.3.0\"}";
+           "\"version\":\"0.3.1\"}";
   // Fits one BLE response even with a full UTF-8 profile name. Network/task
   // diagnostics stay in the larger HTTP status response.
   if (path == "run/status") {
@@ -858,8 +879,11 @@ String clicker_api(const String &path, const String &method, const String &body,
       result = "err profile id 0-31 required";
     else if (clicker_busy() && method != "GET")
       result = "err stop before changing profiles";
-    else if (method == "DELETE")
-      result = LittleFS.remove(filename(id)) ? "ok" : "err missing profile";
+    else if (method == "DELETE") {
+      bool removed = LittleFS.remove(filename(id));
+      if (removed) repairSelectionAfterDelete();
+      result = removed ? "ok" : "err missing profile";
+    }
     else {
       auto *p = allocProfile();
       if (!p)

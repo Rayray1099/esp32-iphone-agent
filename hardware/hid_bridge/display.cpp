@@ -105,7 +105,12 @@ static void renderTask(void *) {
     d.reset = resetReason();
     d.rssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     d.requestedCps = clicker_requested_cps();
-    d.output = clicker_bluetooth_output() ? "BLE SENT" : "USB";
+    d.output = clicker_bluetooth_output() ? "BT" : "USB";
+    String target = clicker_bluetooth_output() ? ble_mouse_label() : tud_mounted() ? "USB HOST" : "NO TARGET";
+    d.target = target.c_str();
+    d.inputConnected = clicker_bluetooth_output() ? ble_mouse_connected() : tud_mounted() && !tud_suspended();
+    d.controllers = ble_controller_peers();
+    d.releasing = s.releasing;
     d.clicks = s.clicks;
     d.loops = s.loops;
     d.late = s.late;

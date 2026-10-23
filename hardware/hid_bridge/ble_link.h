@@ -20,5 +20,7 @@ uint32_t ble_drops();    // video notifies we failed to send
 uint32_t ble_reply_drops();  // replies that never got out to a subscribed peer
 int ble_peers();         // connected centrals
 bool ble_mouse_connected();
+String ble_mouse_label(); // friendly label when supplied by this bonded peer; otherwise its ID suffix
+int ble_controller_peers(); // subscribed controller apps, distinct from HID output
 String ble_mouse_status_json();  // connection state only; no addresses or keys
 bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy);

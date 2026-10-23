@@ -26,6 +26,9 @@ struct ClickerView: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var zoom = 1.0
+    @State private var selectingProfiles = false
+    @State private var selectedProfiles = Set<Int>()
+    @State private var confirmingDeletion = false
     @State private var spanX = ""
     @State private var spanY = ""
     @State private var mouseOutput = "bluetooth"
@@ -63,7 +66,11 @@ struct ClickerView: View {
             } }
             .safeAreaInset(edge: .bottom) { controls }
             .task(id: board.connected) { await watchStatus() }
-            .onChange(of: photo) { _, item in Task { if let data = try? await item?.loadTransferable(type: Data.self) { image = UIImage(data: data) } } }
+            .onChange(of: photo) { _, item in Task { if let data = try? await item?.loadTransferable(type: Data.self), let imported = UIImage(data: data) { setImage(imported) } } }
+            .confirmationDialog("刪除選取的 \(selectedProfiles.count) 個腳本？", isPresented: $confirmingDeletion, titleVisibility: .visible) {
+                Button("刪除 \(selectedProfiles.count) 個腳本", role: .destructive) { perform { await deleteSelectedProfiles() } }
+                Button("取消", role: .cancel) {}
+            } message: { Text("腳本將從開發板移除，無法復原。正在執行時不能刪除。") }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
                 do {
                     let url = try result.get(); let access = url.startAccessingSecurityScopedResource()
@@ -142,12 +149,36 @@ struct ClickerView: View {
 
     private var savedProfiles: some View {
         card("我的腳本", "square.stack") {
+            if !profiles.isEmpty {
+                HStack {
+                    Text(selectingProfiles ? "已選取 \(selectedProfiles.count) 個" : "共 \(profiles.count) 個腳本").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(selectingProfiles ? "完成" : "批次管理") {
+                        selectingProfiles.toggle(); selectedProfiles.removeAll()
+                    }.accessibilityIdentifier("manageProfiles")
+                        .disabled(busy || status.running || status.releasing || !statusAvailable)
+                }
+            }
+            if selectingProfiles {
+                HStack {
+                    Button(selectedProfiles.count == profiles.count ? "取消全選" : "全選") {
+                        selectedProfiles = selectedProfiles.count == profiles.count ? [] : Set(profiles.map(\.id))
+                    }.accessibilityIdentifier("selectAllProfiles")
+                    Spacer()
+                    Button("刪除所選（\(selectedProfiles.count)）", role: .destructive) { confirmingDeletion = true }
+                        .accessibilityIdentifier("deleteSelectedProfiles").disabled(selectedProfiles.isEmpty || busy || status.running || status.releasing || !statusAvailable)
+                }.buttonStyle(.bordered).frame(minHeight: 44)
+            }
             if profiles.isEmpty {
                 Text(board.connected ? "尚無腳本，前往「編輯目標」建立。" : "連線後會顯示開發板已儲存的腳本。")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(profiles) { item in
-                Button { perform { try await choose(item.id) } } label: {
+                Button {
+                    if selectingProfiles {
+                        if !selectedProfiles.insert(item.id).inserted { selectedProfiles.remove(item.id) }
+                    } else { perform { try await choose(item.id) } }
+                } label: {
                     HStack(spacing: 14) {
                         Text(String(format: "%02d", item.id)).font(.headline.monospaced()).foregroundStyle(.secondary)
                             .frame(width: 42, height: 46).background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
@@ -156,9 +187,12 @@ struct ClickerView: View {
                             Text("\(item.points) 個點擊位置").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Image(systemName: slot == item.id ? "checkmark.circle.fill" : "circle").font(.title3).foregroundStyle(slot == item.id ? Color.teal : Color.secondary)
+                        let checked = selectingProfiles ? selectedProfiles.contains(item.id) : slot == item.id
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle").font(.title3).foregroundStyle(checked ? Color.teal : Color.secondary)
                     }.frame(minHeight: 56).contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(busy || status.running)
+                }.buttonStyle(.plain).disabled(busy || status.running || status.releasing)
+                    .accessibilityIdentifier("savedProfile-\(item.id)")
+                    .accessibilityValue(selectingProfiles ? (selectedProfiles.contains(item.id) ? "已選取" : "未選取") : (slot == item.id ? "目前腳本" : ""))
             }
             Button { page = 1 } label: { Label("建立或編輯腳本", systemImage: "plus.circle") }.frame(minHeight: 44)
         }
@@ -219,11 +253,12 @@ struct ClickerView: View {
     }
     @ViewBuilder private var imageButtons: some View {
         PhotosPicker(selection: $photo, matching: .images) { Label("匯入截圖", systemImage: "photo") }
-        Button { if let data = app.feed.frame { image = UIImage(data: data) } else { message = "請先啟用螢幕鏡像，或匯入截圖。" } } label: { Image(systemName: "camera.viewfinder") }.accessibilityLabel("擷取鏡像畫面")
+        Button { if let data = app.feed.frame, let captured = UIImage(data: data) { setImage(captured) } else { message = "請先啟用螢幕鏡像，或匯入截圖。" } } label: { Image(systemName: "camera.viewfinder") }.accessibilityLabel("擷取鏡像畫面")
         Button { addTarget() } label: { Label("新增目標", systemImage: "plus") }.accessibilityIdentifier("addTarget")
     }
     private var canvas: some View {
         GeometryReader { geometry in
+            let size = TargetCanvasGeometry.size(image: image?.size, landscape: profile.landscape, availableWidth: geometry.size.width, maximumHeight: 430 * zoom)
             ZStack {
                 Color(red: 0.04, green: 0.10, blue: 0.15)
                 Canvas { context, size in
@@ -235,20 +270,28 @@ struct ClickerView: View {
                     }
                     context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 1)
                 }.accessibilityHidden(true)
-                if let image { Image(uiImage: image).resizable().frame(width: geometry.size.width, height: geometry.size.height).clipped() }
+                if let image { Image(uiImage: image).resizable().scaledToFit().frame(width: size.width, height: size.height).accessibilityLabel("原比例截圖").accessibilityIdentifier("targetScreenshot") }
                 ForEach(Array(profile.points.enumerated()), id: \.element.id) { index, target in
                     Text("\(index + 1)").font(.system(size: 15, weight: .bold, design: .rounded)).frame(width: 44, height: 44)
                         .background(target.enabled ? cyan : Color.gray, in: Circle()).foregroundStyle(.black)
                         .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 2))
-                        .position(x: Double(target.x) / 10000 * geometry.size.width, y: Double(target.y) / 10000 * geometry.size.height)
+                        .position(x: Double(target.x) / 10000 * size.width, y: Double(target.y) / 10000 * size.height)
                         .gesture(DragGesture(coordinateSpace: .named("targets")).onChanged { value in
                             guard profile.points.indices.contains(index) else { return }
-                            profile.points[index].x = min(10000, max(0, Int(value.location.x / geometry.size.width * 10000)))
-                            profile.points[index].y = min(10000, max(0, Int(value.location.y / geometry.size.height * 10000)))
+                            let position = TargetCanvasGeometry.normalized(value.location, in: size)
+                            profile.points[index].x = position.x
+                            profile.points[index].y = position.y
                         }).accessibilityLabel("目標 \(index + 1)")
                 }
-            }.coordinateSpace(name: "targets").clipShape(RoundedRectangle(cornerRadius: 20))
-        }.aspectRatio(profile.landscape ? 16.0 / 9 : 9.0 / 16, contentMode: .fit).frame(maxHeight: 430 * zoom)
+            }.frame(width: size.width, height: size.height)
+                .coordinateSpace(name: "targets").clipShape(RoundedRectangle(cornerRadius: 20))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }.frame(height: 430 * zoom)
+    }
+
+    private func setImage(_ imported: UIImage) {
+        image = imported; profile.landscape = imported.size.width > imported.size.height
+        message = "已依截圖原始比例顯示；目標座標與圖片共用同一畫布。"
     }
 
     private var timing: some View {
@@ -394,6 +437,29 @@ struct ClickerView: View {
     }
     private func addTarget() { if profile.points.count < 1000 { profile.points.append(ClickTarget()) } }
     private func move(_ i: Int, _ direction: Int) { let j = i + direction; if profile.points.indices.contains(j) { profile.points.swapAt(i, j) } }
+    private func deleteSelectedProfiles() async {
+        guard !status.running, !status.releasing else { message = "請先停止並放開按鍵，再刪除腳本。"; return }
+        let ids = selectedProfiles.sorted()
+        var deleted = Set<Int>()
+        var failure: Error?
+        for id in ids {
+            do {
+                if !MockMode.on { _ = try await client.request("profiles/\(id)", method: "DELETE") }
+                deleted.insert(id); progress = Double(deleted.count) / Double(ids.count)
+            } catch { failure = error; break }
+        }
+        profiles.removeAll { deleted.contains($0.id) }
+        selectedProfiles.subtract(deleted)
+        // Reload even after an uncertain reply: the board may have committed a
+        // deletion before the Bluetooth link dropped. Do not retry it blindly.
+        if deleted.contains(slot) { profile = ClickProfile(); savedProfile = profile; image = nil; schedules = "" }
+        do {
+            if !MockMode.on { try await reload() }
+        } catch { if failure == nil { failure = error } }
+        selectedProfiles.formIntersection(Set(profiles.map(\.id)))
+        if let failure { message = "已確認刪除 \(deleted.count) 個；請重新整理確認其餘腳本：\(failure.localizedDescription)" }
+        else { message = "已刪除 \(deleted.count) 個腳本。"; selectingProfiles = false; selectedProfiles.removeAll() }
+    }
     private func choose(_ id: Int) async throws {
         if MockMode.on { slot = id; return }
         guard !status.running else { throw DeviceError(message: "請先停止執行。") }
@@ -407,12 +473,20 @@ struct ClickerView: View {
         if let object = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: [Int]], let ids = object["profiles"], let first = ids.first {
             slot = first; schedules = ids.map(String.init).joined(separator: ",")
             if !dirty { profile = try await client.load(slot: first); savedProfile = profile }
+        } else if profiles.isEmpty {
+            slot = 0; schedules = ""; profile = ClickProfile(); savedProfile = profile; image = nil
         }
         status = try await client.runStatus(); mouseOutput = status.output; statusAvailable = true
     }
     private func watchStatus() async {
         if savedProfile == nil { savedProfile = profile }
         if MockMode.on {
+            if ProcessInfo.processInfo.arguments.contains("-target-portrait-fixture") {
+                setImage(UIGraphicsImageRenderer(size: CGSize(width: 440, height: 956)).image { context in
+                    UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 440, height: 956))
+                    UIColor.white.setFill(); context.cgContext.fillEllipse(in: CGRect(x: 120, y: 378, width: 200, height: 200))
+                })
+            }
             profiles = [SavedClickProfile(id: 3, name: "Business Empire 快速", points: 1), SavedClickProfile(id: 4, name: "Business Empire 穩定", points: 1)]
             slot = 3; schedules = "3"; status = ClickerRunStatus(running: false, releasing: false, clicks: 300, loops: 300, active: 0, point: 0, late: 0, output_cps: 43.7, requested_cps: 50, output: "bluetooth", mouse_connected: true, profile: "Business Empire 快速", network: "off"); statusAvailable = true
             return
@@ -425,7 +499,13 @@ struct ClickerView: View {
                 do {
                     // A new BLE link may still be negotiating its MTU. Retry the complete
                     // initial load instead of leaving the dashboard with an empty list.
-                    if !profilesLoaded { try await reload(); profilesLoaded = true }
+                    if !profilesLoaded {
+                        try await reload()
+                        // Send only once per link, after MTU and encryption are ready.
+                        // Optional for backward compatibility with older firmware.
+                        _ = try? await client.request("device/label", method: "PUT", object: ["name": UIDevice.current.name])
+                        profilesLoaded = true
+                    }
                     else { status = try await client.runStatus(); statusAvailable = true }
                 }
                 catch { statusAvailable = false; message = "狀態更新失敗：\(error.localizedDescription)" }

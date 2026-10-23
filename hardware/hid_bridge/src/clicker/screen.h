@@ -19,6 +19,8 @@ struct ScreenData {
   const char *qr = "";
   const char *reset = "";
   const char *output = "USB";
+  const char *target = "NO TARGET";
+  unsigned controllers = 0;
   int rssi = 0;
   double requestedCps = 0;
   uint64_t clicks = 0;
@@ -26,6 +28,10 @@ struct ScreenData {
   unsigned schedules = 0, point = 0;
   double cps = 0;
   bool running = false;
+  bool releasing = false, inputConnected = false;
+  const char *runState() const {
+    return releasing ? "STOPPING" : running ? "CLICKING" : !inputConnected ? "NO TARGET" : "STOPPED";
+  }
   uint32_t animationMs = 0;
   float history[24]{};
 };
@@ -45,44 +51,43 @@ public:
     text(266, 18, titles[page % 4], 1, cyan);
     char b[96];
     if (page == 0) {
-      fill(12, 40, 296, 104, card);
-      text(23, 50, d.running ? "LIVE OUTPUT" : "LAST RUN", 1, muted);
+      const uint16_t stateColor = d.releasing ? 0xfd20 : d.running ? mint : d.inputConnected ? white : 0xfd20;
+      fill(12, 38, 296, 28, d.running ? 0x126a : card);
+      fill(21, 48, 7, 7, stateColor);
+      text(38, 47, d.runState(), 2, stateColor);
+      snprintf(b, sizeof b, "%s > %s", d.output, d.target);
+      text(15, 75, b, 1, d.inputConnected ? cyan : 0xfd20);
+      fill(12, 91, 296, 76, card);
       const double rate = d.cps < 0 ? 0 : d.cps > 999.9 ? 999.9 : d.cps;
       snprintf(b, sizeof b, "%05.1f", rate);
-      bigNumber(22, 69, b, cyan);
-      text(240, 82, "CPS", 2, white);
-      text(240, 103, d.output, 1, muted);
-      fill(23, 124, 270, 3, 0x2949);
+      bigNumber(22, 98, b, cyan);
+      text(240, 110, "CPS", 2, white);
+      text(240, 133, d.running ? "LIVE" : "LAST RUN", 1, muted);
+      fill(23, 158, 270, 3, 0x2949);
       int width = d.requestedCps > 0 ? int(270 * rate / d.requestedCps) : 0;
-      fill(23, 124, width > 270 ? 270 : width, 3, mint);
+      fill(23, 158, width > 270 ? 270 : width, 3, mint);
       if (d.running) {
         int pulse = int(d.animationMs / 80 % 266);
-        fill(23 + pulse, 123, 5, 5, white);
+        fill(23 + pulse, 157, 5, 5, white);
       }
-      fill(12, 153, 143, 41, card);
-      fill(164, 153, 144, 41, card);
-      text(22, 161, "CLICKS", 1, muted);
+      fill(12, 174, 143, 38, card);
+      fill(164, 174, 144, 38, card);
+      text(22, 181, "CLICKS", 1, muted);
       snprintf(b, sizeof b, "%llu", (unsigned long long)d.clicks);
-      text(22, 175, b, 2, white);
-      text(175, 161, "TARGET / LOOPS", 1, muted);
+      text(22, 195, b, 2, white);
+      text(175, 181, "TARGET / LOOPS", 1, muted);
       snprintf(b, sizeof b, "%u / %lu", d.point + 1, (unsigned long)d.loops);
-      text(175, 175, b, 2, white);
-      for (int i = 0; i < 24; ++i) {
-        double fraction = d.requestedCps > 0 ? d.history[i] / d.requestedCps : 0;
-        int height = int(12 * fraction);
-        height = height < 1 ? 1 : height > 12 ? 12 : height;
-        fill(13 + 5 * i, 211 - height, 3, height, d.running ? mint : 0x326d);
-      }
-      snprintf(b, sizeof b, "%.0f REQ / %u ACTIVE", d.requestedCps, d.schedules);
-      text(155, 201, b, 1, muted);
+      text(175, 195, b, 2, white);
     } else if (page == 1) {
       text(14, 43, "CONNECTIONS", 2, white);
-      row(69, "MODE", d.network); row(91, "SSID", d.ssid); row(113, "IP", d.ip);
-      row(135, "USB", d.usb); row(157, "BLE", d.ble); row(179, "TAILNET", d.vpn);
-      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi); text(14, 200, b, 1, muted);
+      row(68, "TARGET", d.target);
+      snprintf(b, sizeof b, "%u APP / %s", d.controllers, d.ble); row(88, "CONTROL", b);
+      row(108, "USB", d.usb); row(128, "MODE", d.network);
+      row(148, "SSID", d.ssid); row(168, "IP", d.ip); row(188, "TAILNET", d.vpn);
+      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi); text(14, 205, b, 1, muted);
     } else if (page == 2) {
       text(14, 43, "SYSTEM HEALTH", 2, white);
-      row(69, "FIRMWARE", "0.3.0 / ESP32-S3");
+      row(69, "FIRMWARE", "0.3.1 / ESP32-S3");
       snprintf(b, sizeof b, "%lu SEC", (unsigned long)d.uptime); row(91, "UPTIME", b);
       snprintf(b, sizeof b, "%lu B", (unsigned long)d.heap); row(113, "HEAP", b);
       snprintf(b, sizeof b, "%lu B", (unsigned long)d.psram); row(135, "PSRAM", b);
@@ -98,10 +103,11 @@ public:
     }
     fill(0, 220, 320, 20, 0x10a5);
     if (page == 0) {
-      fill(10, 226, 5, 5, d.running ? mint : muted);
-      text(23, 226, d.running ? "RUNNING" : "READY", 1, d.running ? mint : white);
-      text(86, 226, d.profile, 1, white);
-    } else text(12, 226, "BOOT / 1S START / PRESS STOP", 1, white);
+      text(12, 226, d.profile, 1, white);
+    } else {
+      text(12, 226, d.runState(), 1, d.running ? mint : white);
+      text(83, 226, "BOOT 1S START / PRESS STOP", 1, white);
+    }
   }
 
 private:

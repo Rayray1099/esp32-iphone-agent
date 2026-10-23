@@ -80,9 +80,10 @@ extension ScreenSource {
     private lazy var localSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.allowsCellularAccess = false
-        configuration.allowsExpensiveNetworkAccess = false
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 12
+        // A VPN or metered Wi-Fi can be marked expensive. Cellular is prohibited
+        // separately; rejecting expensive paths can also reject the local LAN.
+        configuration.timeoutIntervalForRequest = 3
+        configuration.timeoutIntervalForResource = 4
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration, delegate: LocalVideoRedirectPolicy(), delegateQueue: nil)
     }()
@@ -169,7 +170,7 @@ extension ScreenSource {
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
         if localActive {
             let deadline = now() + max(wait, 10)
-            while now() < deadline {
+            while localActive && now() < deadline {
                 try Task.checkCancellation()
                 // AirPlay sends nothing for an unchanged screen. A recent board watermark
                 // proves that our decoded frame is still the newest captured image.
@@ -177,7 +178,9 @@ extension ScreenSource {
                    decodedBoardMs == localLatestMs { return "local Wi-Fi (verified latest)" }
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
-            throw BlindError(reason: "區域網路鏡像未追上最新畫面，已停止以避免誤觸。")
+            if localActive {
+                throw BlindError(reason: "區域網路鏡像未追上最新畫面，已停止以避免誤觸。")
+            }
         }
         if streamOn && mirroring {
             if !broken && frame != nil && now() - capturedAt < maxAge { return "live" }
@@ -273,7 +276,10 @@ extension ScreenSource {
             catch {
                 if Task.isCancelled { return }
                 failures += 1
-                if failures >= 3 {
+                let issue = error as NSError
+                note = "local video: \(issue.domain) \(issue.code): \(issue.localizedDescription)"
+                DebugLog.write(note)
+                if failures >= 2 {
                     localActive = false; transport = "BLE"; assembler.reset()
                     decoder.queue.async { [decoder] in decoder.reset() }
                     DebugLog.write("video: local Wi-Fi unavailable; switching to BLE")

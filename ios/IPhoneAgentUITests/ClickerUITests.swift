@@ -1,15 +1,28 @@
 import XCTest
 
 final class ClickerUITests: XCTestCase {
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        let scroll = app.scrollViews["clickerScroll"]
+        for _ in 0..<12 {
+            if element.exists && element.isHittable { return }
+            let upward = !element.exists || element.frame.midY > scroll.frame.midY
+            // The screenshot canvas handles drags. Scroll in the outer padding
+            // so a test gesture cannot move a target instead of the page.
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.8 : 0.3))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.3 : 0.8))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+    }
     func testBulkDelete() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-mock", "-onboarded", "YES", "-sharePrivacyAsked", "YES", "-acceptedDisclaimer", "YES", "-AppleLanguages", "(zh-Hant)"]
         app.launch()
         let manage = app.buttons["manageProfiles"]
         XCTAssertTrue(manage.waitForExistence(timeout: 20))
-        for _ in 0..<6 { if manage.isHittable { break }; app.swipeUp() }
+        reveal(manage, in: app)
         XCTAssertTrue(manage.isHittable); manage.tap()
         let all = app.buttons["selectAllProfiles"]
+        XCTAssertTrue(all.waitForExistence(timeout: 5)); reveal(all, in: app)
         XCTAssertTrue(all.isHittable); all.tap()
         let delete = app.buttons["deleteSelectedProfiles"]
         XCTAssertTrue(delete.isEnabled); delete.tap()
@@ -53,11 +66,11 @@ final class ClickerUITests: XCTestCase {
         add(screenshot)
         app.segmentedControls["clickerPages"].buttons["編輯目標"].tap()
         let addTarget = app.buttons["addTarget"]
-        for _ in 0..<5 { if addTarget.isHittable { break }; app.swipeUp() }
+        reveal(addTarget, in: app)
         XCTAssertTrue(addTarget.isHittable)
         addTarget.tap()
         let fast = app.buttons["applyCPS"]
-        for _ in 0..<8 { if fast.isHittable { break }; app.swipeUp() }
+        reveal(fast, in: app)
         XCTAssertTrue(fast.isHittable)
         XCTAssertTrue(app.staticTexts["目標 2"].exists)
         fast.tap()

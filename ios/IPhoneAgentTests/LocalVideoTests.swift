@@ -43,9 +43,10 @@ final class LocalVideoTests: XCTestCase {
         var image: Data?
         for nal in annexBUnits(try Data(contentsOf: url)) {
             let unit = Data([0,0,0,1]) + nal
-            if let decoded = decoder.decode(unit, jpegQuality: 0.75, emit: true) { image = decoded }
+            if let decoded = decoder.decode(unit, timestamp: 123, jpegQuality: 0.75, emit: true) { image = decoded }
             XCTAssertEqual(decoder.lastStatus, 0)
         }
         XCTAssertNotNil(image); XCTAssertEqual(decoder.width, 32); XCTAssertEqual(decoder.height, 32)
+        XCTAssertEqual(decoder.outputTimestamp, 123)
     }
 }

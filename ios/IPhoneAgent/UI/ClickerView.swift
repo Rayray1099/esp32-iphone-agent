@@ -58,6 +58,7 @@ struct ClickerView: View {
                 }.padding(20).frame(maxWidth: 850).frame(maxWidth: .infinity)
             }
             .background(Color(uiColor: .systemGroupedBackground))
+            .accessibilityIdentifier("clickerScroll")
             .navigationTitle("PULSE 連點器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {

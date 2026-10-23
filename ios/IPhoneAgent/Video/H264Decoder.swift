@@ -25,10 +25,10 @@ final class H264Decoder: @unchecked Sendable {
             needsKey = true
         } else if needsKey && !unit.idr { return }
         if unit.idr && needsKey && !config.isEmpty {
-            _ = software.decode(config, jpegQuality: quality, emit: false)
+            _ = software.decode(config, timestamp: UInt64(unit.boardMs), jpegQuality: quality, emit: false)
         }
         let started = CFAbsoluteTimeGetCurrent()
-        let jpeg = software.decode(unit.data, jpegQuality: quality, emit: emit)
+        let jpeg = software.decode(unit.data, timestamp: UInt64(unit.boardMs), jpegQuality: quality, emit: emit)
         guard software.lastStatus == 0 else {
             needsKey = true
             onError?("CPU H.264 decode failed \(software.lastStatus)")
@@ -36,7 +36,9 @@ final class H264Decoder: @unchecked Sendable {
         }
         if unit.idr { needsKey = false }
         guard let jpeg, emit else { return }
+        let captured = AccessUnit(data: Data(), idr: unit.idr, config: false, snap: unit.snap,
+                                  boardMs: UInt32(truncatingIfNeeded: software.outputTimestamp))
         onFrame?(Frame(jpeg: jpeg, width: software.width, height: software.height,
-                       decodeMs: (CFAbsoluteTimeGetCurrent() - started) * 1000, unit: unit))
+                       decodeMs: (CFAbsoluteTimeGetCurrent() - started) * 1000, unit: captured))
     }
 }

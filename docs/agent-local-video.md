@@ -7,10 +7,12 @@ decoding and JPEG conversion inside the app, including while another app is in f
 Run bash ios/tools/build_openh264.sh before XcodeGen. The build pins source commit
 652bdb7719f30b52b08e506645a7322ff1b2cc6f and bundles its BSD license.
 
-Local video requests disable cellular and expensive network access, use only private
+Local video requests disable cellular access, use only private
 IPv4 addresses received from the paired board, and reject redirects. Model requests
 use the configured endpoint. To ensure the whole phone cannot use cellular,
 turn cellular data off in iOS; the request setting controls only the video session.
+Metered Wi-Fi and VPN paths remain allowed, since they can still reach the board
+without cellular. Local HTTP failures include the NSError domain and code in Diagnostics.
 
 Map ESP32 mouse **button 4** to **Home** in Settings → Accessibility → Touch →
 AssistiveTouch → Devices → ESP32 Agent → Customize Additional Buttons. Send

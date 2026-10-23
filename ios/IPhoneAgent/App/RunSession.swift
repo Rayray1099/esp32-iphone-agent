@@ -87,6 +87,7 @@ extension AppModel {
             say("started: \(task)")
             began(task, early: true)
         } catch {
+            try? await feed.stream(false)
             _ = try? await board.commands.send("v1 POST input/release {}")
             say("cannot start: \(error.localizedDescription)")
             traces.write(feed.frame, kind: "step", ["action": .str("error"),

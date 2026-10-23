@@ -8,6 +8,7 @@
 @implementation SoftwareH264 {
     ISVCDecoder *_decoder;
     NSInteger _lastStatus, _width, _height;
+    uint64_t _outputTimestamp;
 }
 - (instancetype)init {
     if ((self = [super init])) [self reset];
@@ -17,6 +18,7 @@
     if (_decoder) { _decoder->Uninitialize(); WelsDestroyDecoder(_decoder); }
 }
 - (void)reset {
+    _width = 0; _height = 0; _outputTimestamp = 0;
     if (_decoder) { _decoder->Uninitialize(); WelsDestroyDecoder(_decoder); _decoder = nullptr; }
     _lastStatus = WelsCreateDecoder(&_decoder);
     if (!_lastStatus && _decoder) {
@@ -31,13 +33,33 @@
 - (NSInteger)lastStatus { return _lastStatus; }
 - (NSInteger)width { return _width; }
 - (NSInteger)height { return _height; }
-- (NSData *)decode:(NSData *)annexB jpegQuality:(double)quality emit:(BOOL)emit {
+- (uint64_t)outputTimestamp { return _outputTimestamp; }
+- (NSData *)decode:(NSData *)annexB timestamp:(uint64_t)timestamp jpegQuality:(double)quality emit:(BOOL)emit {
     if (!_decoder || annexB.length > INT_MAX) { _lastStatus = -1; return nil; }
     unsigned char *planes[3]{};
     SBufferInfo info{};
+    info.uiInBsTimeStamp = timestamp;
     _lastStatus = _decoder->DecodeFrameNoDelay((const unsigned char *)annexB.bytes,
                                               (int)annexB.length, planes, &info);
+    // High-profile AVC retains a decoded picture for display reordering even
+    // without B frames. AirPlay may now stay quiet indefinitely. Drain that
+    // picture without discarding reference frames, and keep its own timestamp.
+    if (!_lastStatus) {
+        int remaining = 0;
+        _decoder->GetOption(DECODER_OPTION_NUM_OF_FRAMES_REMAINING_IN_BUFFER, &remaining);
+        for (int i = 0; i < remaining; ++i) {
+            unsigned char *flushed[3]{};
+            SBufferInfo pending{};
+            _lastStatus = _decoder->FlushFrame(flushed, &pending);
+            if (_lastStatus) return nil;
+            if (pending.iBufferStatus == 1 && (info.iBufferStatus != 1 ||
+                pending.uiOutYuvTimeStamp >= info.uiOutYuvTimeStamp)) {
+                info = pending; std::copy(flushed, flushed + 3, planes);
+            }
+        }
+    }
     if (_lastStatus || info.iBufferStatus != 1 || !emit) return nil;
+    _outputTimestamp = info.uiOutYuvTimeStamp;
     int w = info.UsrData.sSystemBuffer.iWidth, h = info.UsrData.sSystemBuffer.iHeight;
     if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { _lastStatus = -2; return nil; }
     _width = w; _height = h;

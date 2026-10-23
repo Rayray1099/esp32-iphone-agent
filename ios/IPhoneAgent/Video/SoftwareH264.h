@@ -6,7 +6,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) NSInteger lastStatus;
 @property(nonatomic, readonly) NSInteger width;
 @property(nonatomic, readonly) NSInteger height;
-- (nullable NSData *)decode:(NSData *)annexB jpegQuality:(double)quality emit:(BOOL)emit;
+@property(nonatomic, readonly) uint64_t outputTimestamp;
+- (nullable NSData *)decode:(NSData *)annexB timestamp:(uint64_t)timestamp jpegQuality:(double)quality emit:(BOOL)emit;
 - (void)reset;
 @end
 NS_ASSUME_NONNULL_END

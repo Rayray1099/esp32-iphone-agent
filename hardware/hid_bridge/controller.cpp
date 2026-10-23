@@ -1,5 +1,6 @@
 #include "clicker_service.h"
 #include "web_assets.h"
+#include "video_link.h"
 #include <esp_http_server.h>
 #include <sodium.h>
 static httpd_handle_t http = nullptr;
@@ -40,6 +41,10 @@ static esp_err_t route(httpd_req_t *r) {
   }
   if (path == "/api/v1/screen")
     return display_bmp(r) ? ESP_OK : ESP_FAIL;
+  if (path == "/api/v1/video/gop" && r->method == HTTP_GET)
+    return video_http_gop(r);
+  if (path == "/api/v1/video/frames" && r->method == HTTP_GET)
+    return video_http_frames(r);
   if (path == "/api/v1/ota" && r->method == HTTP_POST)
     return ota_upload(r) ? ESP_OK : ESP_FAIL;
   if (!path.startsWith("/api/v1/"))

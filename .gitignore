@@ -34,6 +34,8 @@ output/
 *.ota
 .playwright-cli/
 ios/build-sim/
+ios/.build-deps/
+ios/IPhoneAgent/ThirdParty/OpenH264-LICENSE.txt
 hardware/emulator/build/
 hardware/emulator/sdkconfig
 hardware/emulator/sdkconfig.old

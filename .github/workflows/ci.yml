@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: brew install xcodegen
+      - run: bash tools/build_openh264.sh
       - run: xcodegen generate
       - name: Unit tests on simulator
         run: |

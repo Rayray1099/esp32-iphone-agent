@@ -124,6 +124,7 @@ struct AcknowledgementsView: View {
         ("Arduino-ESP32 / ESP-IDF", "LGPL-2.1 / Apache-2.0", "Espressif's frameworks for the board firmware."),
         ("NimBLE", "Apache-2.0", "The board's Bluetooth LE stack."),
         ("TinyUSB", "MIT", "The board's USB mouse and keyboard."),
+        ("OpenH264 2.6.0", "BSD-2-Clause", "CPU video decoding for the background AI agent. License is bundled in ThirdParty/OpenH264-LICENSE.txt."),
     ]
 
     var body: some View {

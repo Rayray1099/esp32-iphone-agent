@@ -2,6 +2,7 @@
 // or every access unit while `stream on`. Also runs `bench` and computes the video stats.
 #pragma once
 #include <Arduino.h>
+#include <esp_http_server.h>
 
 bool video_begin();
 void video_on_config(const uint8_t *sps_pps, size_t len);  // AirPlay callbacks (mirror task)
@@ -15,3 +16,6 @@ struct VideoStats {
   float fps;
 };
 VideoStats video_stats();
+// Authenticated diagnostic download: a consistent Annex-B GOP, copied before network I/O.
+esp_err_t video_http_gop(httpd_req_t *request);
+esp_err_t video_http_frames(httpd_req_t *request);

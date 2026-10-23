@@ -44,6 +44,9 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSBluetoothAlwaysUsageDescription: PULSE 透過藍牙連接 ESP32，設定連點腳本、查看狀態及控制指標。
+        NSLocalNetworkUsageDescription: PULSE 透過區域網路讀取 ESP32 的螢幕鏡像，讓 AI 助理取得即時畫面。
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UIBackgroundModes: [bluetooth-central]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -59,6 +62,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(IA_BUNDLE_ID)
+        SWIFT_OBJC_BRIDGING_HEADER: IPhoneAgent/IPhoneAgent-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(inherited) $(PROJECT_DIR)/.build-deps/openh264/include
+        LIBRARY_SEARCH_PATHS: $(inherited) $(PROJECT_DIR)/.build-deps/openh264/$(PLATFORM_NAME)
+        OTHER_LDFLAGS: $(inherited) -lopenh264 -lc++
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
         PRODUCT_NAME: IPhoneAgent
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_EMIT_LOC_STRINGS: YES

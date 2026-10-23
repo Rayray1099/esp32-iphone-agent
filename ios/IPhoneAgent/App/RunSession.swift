@@ -61,6 +61,9 @@ extension AppModel {
             } else {
                 try await feed.stream(true)  // the agent waits for the screen to settle: it needs every change
                 mark("stream on")
+                if feed.transport == "Wi-Fi" {
+                    mark("local video ready: " + (try await feed.currentFrame()))
+                }
             }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "agent") { [weak self] in
                 self?.say("iOS is ending background time; BLE status keeps the run going")

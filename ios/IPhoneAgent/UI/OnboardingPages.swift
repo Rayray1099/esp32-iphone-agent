@@ -220,6 +220,8 @@ struct ActPage: View {
                        title: "Let Me Use the Pointer",
                        message: "開發板可透過 USB 或藍牙控制指標。請開啟 AssistiveTouch，再執行校準。")
             if !pointer.calibrated { MiniPhoneDemo(kind: .assistiveTouch) }
+            Text("AI 助理需要返回主畫面：設定 → 輔助使用 → 觸控 → AssistiveTouch → 裝置 → ESP32 Agent → 自訂其他按鈕。按下滑鼠按鈕 4，將它設成「主畫面」。")
+                .font(.footnote).foregroundStyle(.secondary)
             Panel {
                 CheckRow(title: "Mouse connected", done: mouse, active: !mouse, waiting: board.connected && !mouse)
                 Divider().padding(.vertical, Space.s)

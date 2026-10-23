@@ -28,6 +28,7 @@ struct DiagnosticsView: View {
                 row("Status age", String(format: "%.1f s", metrics.statusAge))
             }
             SwiftUI.Section("Video") {
+                row("鏡像傳輸", feed.transport)
                 row("AirPlay kbps", f(board.status?.kbps))
                 row("AirPlay fps", f(board.status?.fps, "%.1f"))
                 row("IDR interval (board / app)", "\(board.status?.idr.map { "\($0) ms" } ?? "–") / \(f(metrics.idrIntervalMs)) ms")

@@ -16,6 +16,7 @@
 #include "tusb.h"
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
+#include "clicker_service.h"
 
 static_assert(MYNEWT_VAL(MSYS_1_BLOCK_COUNT) == 64 && MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 320,
               "nimble_cfg.h not applied: build with hardware/flash.sh");
@@ -179,6 +180,20 @@ class CharCb : public NimBLECharacteristicCallbacks {
     const NimBLEAttValue &raw = c->getValue();
     String v(raw.c_str(), raw.length());
     if (c == netChar) { net_request(v); return; }
+    // Grant the local video reader its existing controller token only over a bonded,
+    // encrypted BLE connection. This command never goes through the serial log relay.
+    if (v.endsWith(" video-auth")) {
+      String id = v.substring(0, v.indexOf(' '));
+      if (!ci.isEncrypted() || !ci.isBonded()) {
+        String reply = id + " err Pair and encrypt the BLE connection first";
+        chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle());
+        return;
+      }
+      String reply = id + " ok {\"url\":\"http://" + net_ip() +
+                "\",\"token\":\"" + controller_token() + "\"}";
+      chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle());
+      return;
+    }
     // Versioned commands can carry credentials and certificates. Require the same
     // encrypted, bonded channel as the existing network characteristic.
     if (v.indexOf(" v1 ") >= 0 && (!ci.isEncrypted() || !ci.isBonded())) {

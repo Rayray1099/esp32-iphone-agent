@@ -628,7 +628,7 @@ String clicker_api(const String &path, const String &method, const String &body,
   if (path == "capabilities")
     return "{\"api\":1,\"board\":\"s3-n8r8-st7789\",\"profiles\":32,\"points\":"
            "1000,\"schedules\":16,\"timing_us\":1,\"usb_poll_us\":1000,"
-           "\"version\":\"0.3.2\"}";
+           "\"version\":\"0.3.3\"}";
   // Fits one BLE response even with a full UTF-8 profile name. Network/task
   // diagnostics stay in the larger HTTP status response.
   if (path == "run/status") {

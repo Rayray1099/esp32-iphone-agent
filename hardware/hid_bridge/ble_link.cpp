@@ -13,6 +13,7 @@
 #include <NimBLEHIDDevice.h>
 #include <esp_timer.h>
 #include <cJSON.h>
+#include "tusb.h"
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
 
@@ -44,14 +45,13 @@ struct Text {
 
 static NimBLEServer *server;
 static NimBLECharacteristic *mouseReport;
+static NimBLECharacteristic *keyboardReport, *consumerReport;
 static std::atomic<int> mousePeer{-1};
 static int64_t lastMouseReportUs = 0;
 static uint8_t mouseMap[] = {
-  0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x01,0x09,0x01,0xA1,0x00,
-  0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,0x95,0x03,
-  0x75,0x01,0x81,0x02,0x95,0x01,0x75,0x05,0x81,0x03,0x05,0x01,
-  0x09,0x30,0x09,0x31,0x15,0x81,0x25,0x7F,0x75,0x08,0x95,0x02,
-  0x81,0x06,0xC0,0xC0
+  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(1)),
+  TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(2)),
+  TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(3))
 };
 static NimBLECharacteristic *chars[CH_COUNT], *netChar;
 static QueueHandle_t cmdQueue, replyQueue;
@@ -62,6 +62,7 @@ static std::atomic<int> ctrlPending;  // replies queued or sending + a status wa
 static volatile int peers[MAX_PEERS] = {-1, -1};
 static volatile bool subscribed[MAX_PEERS][CH_COUNT];
 static bool mouseSubscribed[MAX_PEERS]{};
+static bool keyboardSubscribed[MAX_PEERS]{}, consumerSubscribed[MAX_PEERS]{};
 static portMUX_TYPE labelLock = portMUX_INITIALIZER_UNLOCKED;
 static char peerLabels[MAX_PEERS][25]{};
 static char peerSuffixes[MAX_PEERS][6]{};
@@ -150,6 +151,7 @@ class ServerCb : public NimBLEServerCallbacks {
       peerLabels[i][0] = peerSuffixes[i][0] = 0;
       portEXIT_CRITICAL(&labelLock);
       mouseSubscribed[i] = false;
+      keyboardSubscribed[i] = consumerSubscribed[i] = false;
       for (int c = 0; c < CH_COUNT; c++) subscribed[i][c] = false;
       peers[i] = -1;
     }
@@ -217,6 +219,11 @@ class CharCb : public NimBLECharacteristicCallbacks {
     c->setValue((const uint8_t *)j.c_str(), j.length());
   }
   void onSubscribe(NimBLECharacteristic *c, NimBLEConnInfo &ci, uint16_t sub) override {
+    if (c == keyboardReport || c == consumerReport) {
+      int slot = slotFor(ci.getConnHandle());
+      if (slot >= 0) (c == keyboardReport ? keyboardSubscribed : consumerSubscribed)[slot] = sub & 1;
+      return;
+    }
     if (c == mouseReport) {
       int slot = slotFor(ci.getConnHandle());
       if (slot >= 0) mouseSubscribed[slot] = sub & 1;
@@ -360,6 +367,10 @@ void ble_begin(const String &name) {
   hid->setReportMap(mouseMap, sizeof mouseMap);
   mouseReport = hid->getInputReport(1);
   mouseReport->setCallbacks(&charCb);
+  keyboardReport = hid->getInputReport(2);
+  consumerReport = hid->getInputReport(3);
+  keyboardReport->setCallbacks(&charCb);
+  consumerReport->setCallbacks(&charCb);
   hid->setBatteryLevel(100);
   server->start();
 
@@ -419,22 +430,40 @@ String ble_mouse_status_json() {
     result += String("{\"encrypted\":") + (ci.isEncrypted() ? "true" : "false") +
       ",\"bonded\":" + (ci.isBonded() ? "true" : "false") +
       ",\"mouse_subscribed\":" + (mouseSubscribed[i] ? "true" : "false") +
+      ",\"keyboard_subscribed\":" + (keyboardSubscribed[i] ? "true" : "false") +
+      ",\"consumer_subscribed\":" + (consumerSubscribed[i] ? "true" : "false") +
       ",\"interval_us\":" + String(ci.getConnInterval() * 1250) + "}";
   }
   return result + "]}";
 }
-bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy) {
+static bool hidSend(NimBLECharacteristic *characteristic, const uint8_t *report, size_t size) {
   int peer = mousePeer.load();
   int64_t now = esp_timer_get_time();
   // Notifications acknowledge host submission, not phone tap reception. Bound
   // controller backlog to two packets and pace retries outside the BLE task.
-  if (peer < 0 || !mouseReport || now - lastMouseReportUs < 1000 ||
+  if (peer < 0 || !characteristic || now - lastMouseReportUs < 1000 ||
       os_msys_num_free() < MBUF_RESERVE || ctrlMax - ble_hs_hci_avail_pkts >= 2)
     return false;
-  uint8_t report[] = {buttons, uint8_t(dx), uint8_t(dy)};
-  if (!mouseReport->notify(report, sizeof report, peer)) return false;
+  if (!characteristic->notify(report, size, peer)) return false;
   lastMouseReportUs = now;
   return true;
+}
+bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel, int8_t pan) {
+  const uint8_t report[] = {buttons, uint8_t(dx), uint8_t(dy), uint8_t(wheel), uint8_t(pan)};
+  return hidSend(mouseReport, report, sizeof report);
+}
+bool ble_keyboard_send(uint8_t modifiers, const uint8_t keys[6]) {
+  int slot = slotOf(mousePeer.load());
+  if (slot < 0 || !keyboardSubscribed[slot]) return false;
+  uint8_t report[8] = {modifiers, 0};
+  memcpy(report + 2, keys, 6);
+  return hidSend(keyboardReport, report, sizeof report);
+}
+bool ble_consumer_send(uint16_t usage) {
+  int slot = slotOf(mousePeer.load());
+  if (slot < 0 || !consumerSubscribed[slot]) return false;
+  uint8_t report[] = {uint8_t(usage), uint8_t(usage >> 8)};
+  return hidSend(consumerReport, report, sizeof report);
 }
 
 bool ble_pop_cmd(String &line, uint32_t wait_ms) {

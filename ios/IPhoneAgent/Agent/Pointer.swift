@@ -297,7 +297,7 @@ import Foundation
     /// a rest: resting opens the app switcher).
     func goHome() async throws {
         if (try? await device.send("homescreen")) != nil { return }
-        try await key("cmd+h")
+        _ = try? await key("cmd+h")
         try await Task.sleep(nanoseconds: 350_000_000)
         try await swipe(0.5, 0.995, 0.5, 0.45, hold: false)
         pos = nil  // starting at the screen's edge may have clamped the pointer: re-home before the next move

@@ -101,6 +101,23 @@ import XCTest
         XCTAssertEqual(s.fps, 4.8)
     }
 
+    func testSelectedInputReadinessAndLegacyFirmware() throws {
+        func status(_ json: String) throws -> BoardStatus {
+            try XCTUnwrap(BoardStatus.decode(Data(json.utf8)))
+        }
+        XCTAssertTrue(try status(#"{"usb":"ok"}"#).inputReady)
+        XCTAssertFalse(try status(#"{"usb":"off"}"#).inputReady)
+        let bluetooth = try status(#"{"usb":"off","output":"bluetooth","hid":"ok"}"#)
+        XCTAssertTrue(bluetooth.inputReady)
+        // A live USB cable must not mask the selected Bluetooth target disconnecting.
+        let disconnected = try status(#"{"usb":"ok","output":"bluetooth","hid":"off"}"#)
+        XCTAssertFalse(bluetooth.merged(with: disconnected).inputReady)
+        XCTAssertFalse(try status(#"{"usb":"ok","output":"bluetooth"}"#).inputReady)
+        let compact = try status(#"{"up":2,"hid":"off","output":"bluetooth"}"#)
+        XCTAssertEqual(bluetooth.merged(with: compact).output, "bluetooth")
+        XCTAssertFalse(bluetooth.merged(with: compact).inputReady)
+    }
+
     func testPointerRehomesEveryTenGestures() async throws {
         let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")

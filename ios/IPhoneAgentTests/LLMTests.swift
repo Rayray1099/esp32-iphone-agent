@@ -36,6 +36,11 @@ final class StubProtocol: URLProtocol {
 
 /// Port of server/tests/test_llm.py, plus streaming.
 @MainActor final class LLMTests: XCTestCase {
+    func testProductionModelSessionsCannotUseCellularOrPhoneHotspots() {
+        let config = LLMClient.wifiConfiguration()
+        XCTAssertFalse(config.allowsCellularAccess)
+        XCTAssertFalse(config.allowsExpensiveNetworkAccess)
+    }
     func testProviderInferenceAndCustomEndpoints() {
         XCTAssertEqual(ModelProvider.infer(baseURL: "https://openrouter.ai/api/v1/", model: "openrouter/free"), .openRouter)
         XCTAssertEqual(ModelProvider.infer(baseURL: "https://api.openai.com/v1", model: "custom"), .openAI)

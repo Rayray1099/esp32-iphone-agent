@@ -269,6 +269,7 @@ String net_status_json() {
   cJSON_AddStringToObject(j, "mode", mode.c_str());
   cJSON_AddStringToObject(j, "ssid", (mode == "ap" ? apSsid : staSsid).c_str());
   cJSON_AddStringToObject(j, "ip", net_ip().c_str());
+  cJSON_AddStringToObject(j, "uplink_ssid", WiFi.status() == WL_CONNECTED ? staSsid.c_str() : "");
   cJSON_AddStringToObject(
       j, "ap_ip", mode == "off" ? "" : WiFi.softAPIP().toString().c_str());
   cJSON_AddNumberToObject(j, "rssi",

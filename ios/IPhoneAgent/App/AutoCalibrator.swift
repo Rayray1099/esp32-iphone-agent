@@ -46,8 +46,8 @@ import UIKit
 
     var busy: Bool { phase.step != nil }
 
-    /// The mouse is up (board connected, USB HID mounted).
-    var boardReady: Bool { app.board.connected && app.board.status?.usb == "ok" }
+    /// The selected USB or Bluetooth mouse is ready.
+    var boardReady: Bool { app.board.connected && app.board.status?.inputReady == true }
     var mirroring: Bool { app.board.status?.ap == "streaming" }
 
     /// Calibration is due: never done, the screen shape changed, or the learned correction drifted.

@@ -36,13 +36,28 @@ public:
 };
 BridgeMouse mouse;
 static uint8_t bluetoothButtons = 0;
+template <typename Send> bool bluetoothSend(Send send) {
+  uint32_t began = millis();
+  do {
+    if (send()) return true;
+    if (!ble_mouse_connected()) return false;
+    delay(1);
+  } while (millis() - began < 500);
+  return false;
+}
 USBHIDKeyboard keyboard;
 USBHIDConsumerControl consumer;
 void clearManualInputState() {
   mouse.clearState();
   bluetoothButtons = 0;
-  keyboard.releaseAll();
-  consumer.release();
+  if (clicker_bluetooth_output()) {
+    const uint8_t keys[6]{};
+    bluetoothSend([&] { return ble_keyboard_send(0, keys); });
+    bluetoothSend([] { return ble_consumer_send(0); });
+  } else if (tud_mounted() && !tud_suspended()) {
+    keyboard.releaseAll();
+    consumer.release();
+  }
 }
 const uint16_t AC_HOME = 0x0223;  // HID consumer page: AC Home
 static String receiverName = "ESP32 Agent";
@@ -84,6 +99,25 @@ bool pressCombo(String combo) {
   delay(30);
   keyboard.releaseAll();
   return true;
+}
+
+// Reuse Arduino's US layout and command key codes for both HID transports.
+bool bluetoothKey(uint8_t key, uint8_t &modifiers, uint8_t &usage) {
+  usage = 0;
+  if (key >= 0x88) usage = key - 0x88;
+  else if (key >= 0x80) modifiers |= 1 << (key - 0x80);
+  else {
+    usage = KeyboardLayout_en_US[key];
+    if (!usage) return false;
+    if (usage & 0x80) { modifiers |= 2; usage &= 0x7f; }
+  }
+  return key != 0;
+}
+bool bluetoothKeys(uint8_t modifiers, const uint8_t keys[6]) {
+  if (!bluetoothSend([&] { return ble_keyboard_send(modifiers, keys); })) return false;
+  delay(30);
+  const uint8_t released[6]{};
+  return bluetoothSend([&] { return ble_keyboard_send(0, released); });
 }
 
 // A locked or sleeping phone suspends USB; sending HID reports then can stall. Ask it to wake up instead,
@@ -139,7 +173,38 @@ String run(const String &line) {
       delay(60);
       return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
     }
-    return "err keyboard/scroll commands require USB output";
+    if (cmd == "scroll") {
+      a = constrain(a, -127, 127); b = constrain(b, -127, 127);
+      return bluetoothSend([&] { return ble_mouse_send(bluetoothButtons, 0, 0, a, b); })
+        ? "ok" : "err Bluetooth scroll failed";
+    }
+    if (cmd == "homescreen") {
+      if (!bluetoothSend([] { return ble_consumer_send(AC_HOME); })) return "err Bluetooth Home unavailable";
+      delay(40);
+      return bluetoothSend([] { return ble_consumer_send(0); }) ? "ok" : "err Bluetooth Home release failed";
+    }
+    if (cmd == "type") {
+      // Validate first so unsupported UTF-8 never leaves a partially typed command.
+      for (size_t i = 0; i < arg.length(); ++i)
+        if (uint8_t(arg[i]) >= 128 || !KeyboardLayout_en_US[uint8_t(arg[i])]) return "err type supports US ASCII only";
+      for (size_t i = 0; i < arg.length(); ++i) {
+        uint8_t modifiers = 0, keys[6]{};
+        bluetoothKey(arg[i], modifiers, keys[0]);
+        if (!bluetoothKeys(modifiers, keys)) return "err Bluetooth keyboard send/release failed";
+      }
+      return "ok";
+    }
+    if (cmd == "key") {
+      uint8_t modifiers = 0, keys[6]{}, count = 0;
+      arg += '+';
+      for (int i; (i = arg.indexOf('+')) >= 0; arg = arg.substring(i + 1)) {
+        uint8_t usage;
+        if (!bluetoothKey(keyCode(arg.substring(0, i)), modifiers, usage) || (usage && count == 6)) return "err unknown key";
+        if (usage) keys[count++] = usage;
+      }
+      return bluetoothKeys(modifiers, keys) ? "ok" : "err Bluetooth keyboard send/release failed";
+    }
+    return "err unknown command";
   }
   if (!usbReady()) return "err phone usb asleep (unlock the phone)";
   if (cmd == "home") {  // slam the pointer into the top-left corner
@@ -225,20 +290,23 @@ String board(const String &line, const String &id) {
 String statusJson(bool full) {
   static const char *apStates[] = {"idle", "connected", "streaming"};
   VideoStats v = video_stats();
-  char s[384];
+  char s[512];
   snprintf(s, sizeof s,
            "{\"up\":%lu,\"rst\":\"%s\",\"heap\":%u,\"psram\":%u,\"usb\":\"%s\",\"net\":\"%s\",\"ip\":\"%s\",\"sta\":%d,"
-           "\"ap\":\"%s\",\"w\":%u,\"h\":%u,\"kbps\":%lu,\"fps\":%.1f,\"idr\":%lu,\"gop\":%lu,"
+           "\"output\":\"%s\",\"hid\":\"%s\",\"ap\":\"%s\",\"w\":%u,\"h\":%u,\"kbps\":%lu,\"fps\":%.1f,\"idr\":%lu,\"gop\":%lu,"
            "\"ble\":{\"mtu\":%u,\"phy\":%u,\"kbps\":%lu,\"drop\":%lu,\"rdrop\":%lu,\"n\":%d}}",
            millis(), resetReason(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), usbState(), net_mode(), net_ip().c_str(), net_peers(),
+           clicker_output(), clicker_bluetooth_output() ? (ble_mouse_connected() ? "ok" : "off") : usbState(),
            apStates[airplay_state()], cfg_width(), cfg_height(), (unsigned long)v.kbps, v.fps, (unsigned long)v.idr_ms,
            (unsigned long)v.gop_bytes, ble_mtu(), ble_phy(), (unsigned long)ble_kbps(), (unsigned long)ble_drops(),
            (unsigned long)ble_reply_drops(), ble_peers());
   if (full) return s;
   // MTU below ~250 (before the MTU exchange): keep only the fields the app needs to stay alive
-  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
-           millis(), resetReason(), usbState(), net_mode(), apStates[airplay_state()], ble_mtu());
+  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"output\":\"%s\",\"hid\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
+           millis(), resetReason(), usbState(), clicker_output(),
+           clicker_bluetooth_output() ? (ble_mouse_connected() ? "ok" : "off") : usbState(),
+           net_mode(), apStates[airplay_state()], ble_mtu());
   return s;
 }
 

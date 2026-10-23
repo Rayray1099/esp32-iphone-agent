@@ -35,6 +35,14 @@ extension AppModel {
             return
         }
         guard !Task.isCancelled else { return }
+        // Keep the phone's internet Wi-Fi when the board already has an uplink.
+        // Joining the isolated AP here would strand Wi-Fi-only model requests.
+        if let uplink = net.uplink_ssid, !uplink.isEmpty {
+            manualHotspot = nil
+            join = .joined
+            say("mirroring: board on shared Wi-Fi \(uplink); keep phone on that network")
+            return
+        }
         let ssid = net.ssid ?? "?"
         if await onBoardWiFi(ssid) {  // already there: iOS would show no prompt
             say("hotspot: already on \(ssid)")

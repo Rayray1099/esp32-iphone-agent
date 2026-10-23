@@ -13,13 +13,19 @@ final class ClickerUITests: XCTestCase {
         XCTAssertTrue(all.isHittable); all.tap()
         let delete = app.buttons["deleteSelectedProfiles"]
         XCTAssertTrue(delete.isEnabled); delete.tap()
-        app.buttons["取消"].tap()
+        let confirmation = app.alerts.firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let cancel = confirmation.buttons["取消"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.tap()
         XCTAssertTrue(app.buttons["savedProfile-3"].exists)
         XCTAssertTrue(app.buttons["savedProfile-4"].exists)
         delete.tap()
-        app.buttons["刪除 2 個腳本"].tap()
-        XCTAssertFalse(app.buttons["savedProfile-3"].exists)
-        XCTAssertFalse(app.buttons["savedProfile-4"].exists)
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["刪除 2 個腳本"].tap()
+        let removed = NSPredicate(format: "exists == false")
+        expectation(for: removed, evaluatedWith: app.buttons["savedProfile-3"])
+        expectation(for: removed, evaluatedWith: app.buttons["savedProfile-4"])
+        waitForExpectations(timeout: 10)
     }
     func testScreenshotAspect() throws {
         let app = XCUIApplication()

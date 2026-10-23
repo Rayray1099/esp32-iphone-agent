@@ -1,5 +1,6 @@
 #pragma once
 #include "../qrcode/qrcodegen.h"
+#include "smooth_font.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -32,91 +33,137 @@ struct ScreenData {
   const char *runState() const {
     return releasing ? "STOPPING" : running ? "CLICKING" : !inputConnected ? "NO TARGET" : "STOPPED";
   }
+  uint16_t stateColor() const {
+    return releasing ? 0xfc6e : running ? 0x6ff3 : !inputConnected ? 0xfa6b : 0xfdc6;
+  }
   uint32_t animationMs = 0;
   float history[24]{};
 };
-// Small fixed font and renderer shared by the firmware and host capture
-// fixture.
+// Bounded font rasterizer shared by firmware and host capture fixtures.
 class Screen {
 public:
   static constexpr int Width = 320, Height = 240;
   explicit Screen(uint16_t *pixels) : fb(pixels) {}
   void render(int page, const ScreenData &d) {
-    constexpr uint16_t bg = 0x0843, card = 0x10a5, muted = 0x8495;
+    constexpr uint16_t bg = 0x0863, muted = 0x8495;
     constexpr uint16_t cyan = 0x57ff, mint = 0x6ff3, white = 0xf7bf;
     fill(0, 0, Width, Height, bg);
-    fill(12, 12, 3, 14, cyan);
-    text(23, 16, "S3 / PULSE", 2, white);
+    for (int i = 0; i < 5; ++i) {
+      const int heights[] = {5, 10, 18, 10, 5};
+      rounded(18 + i * 3, 24 - heights[i] / 2, 2, heights[i], 1, cyan);
+    }
+    smooth(40, 13, "PULSE", font14, white);
     const char *titles[] = {"LIVE", "LINK", "SYSTEM", "SETUP"};
-    text(266, 18, titles[page % 4], 1, cyan);
+    if (page != 0) smooth(249, 15, titles[page % 4], font11, muted);
     char b[96];
     if (page == 0) {
-      const uint16_t stateColor = d.releasing ? 0xfd20 : d.running ? mint : d.inputConnected ? white : 0xfd20;
-      fill(12, 38, 296, 28, d.running ? 0x126a : card);
-      fill(21, 48, 7, 7, stateColor);
-      text(38, 47, d.runState(), 2, stateColor);
-      snprintf(b, sizeof b, "%s > %s", d.output, d.target);
-      text(15, 75, b, 1, d.inputConnected ? cyan : 0xfd20);
-      fill(12, 91, 296, 76, card);
+      const uint16_t stateColor = d.stateColor();
+      const char *title = d.releasing ? "Stopping" : d.running ? "Clicking" : d.inputConnected ? "Stopped" : "Disconnected";
+      rounded(207, 13, 95, 21, 10, 0x1126);
+      smooth(218, 16, std::strcmp(d.output, "BT") == 0 ? "BLUETOOTH" : "USB OUTPUT", font11, cyan);
+      smooth(18, 43, title, font26, stateColor);
+      smooth(19, 78, d.inputConnected ? d.target : "Pair a phone to start", font11, muted, 287);
+      fill(18, 99, 284, 1, 0x1947);
       const double rate = d.cps < 0 ? 0 : d.cps > 999.9 ? 999.9 : d.cps;
-      snprintf(b, sizeof b, "%05.1f", rate);
-      bigNumber(22, 98, b, cyan);
-      text(240, 110, "CPS", 2, white);
-      text(240, 133, d.running ? "LIVE" : "LAST RUN", 1, muted);
-      fill(23, 158, 270, 3, 0x2949);
-      int width = d.requestedCps > 0 ? int(270 * rate / d.requestedCps) : 0;
-      fill(23, 158, width > 270 ? 270 : width, 3, mint);
+      snprintf(b, sizeof b, "%.1f", rate);
+      smooth(15, 98, b, font58, cyan);
+      smooth(226, 114, "CPS", font18, cyan);
+      smooth(226, 140, d.running ? "LIVE RATE" : "LAST RUN", font11, muted);
+      rounded(18, 164, 284, 3, 1, 0x1947);
+      int width = d.requestedCps > 0 ? int(284 * rate / d.requestedCps) : 0;
+      rounded(18, 164, width > 284 ? 284 : width, 3, 1, d.running ? mint : 0x326d);
       if (d.running) {
-        int pulse = int(d.animationMs / 80 % 266);
-        fill(23 + pulse, 157, 5, 5, white);
+        int pulse = int(d.animationMs / 80 % 278);
+        rounded(18 + pulse, 163, 6, 5, 2, mint);
       }
-      fill(12, 174, 143, 38, card);
-      fill(164, 174, 144, 38, card);
-      text(22, 181, "CLICKS", 1, muted);
+      smooth(18, 176, "Clicks", font11, muted);
       snprintf(b, sizeof b, "%llu", (unsigned long long)d.clicks);
-      text(22, 195, b, 2, white);
-      text(175, 181, "TARGET / LOOPS", 1, muted);
-      snprintf(b, sizeof b, "%u / %lu", d.point + 1, (unsigned long)d.loops);
-      text(175, 195, b, 2, white);
+      smooth(18, 192, b, font14, white, 99);
+      fill(114, 181, 1, 25, 0x1947);
+      smooth(130, 176, "Loops", font11, muted);
+      snprintf(b, sizeof b, "%lu", (unsigned long)d.loops); smooth(130, 192, b, font14, white, 73);
+      fill(212, 181, 1, 25, 0x1947);
+      smooth(228, 176, "Requested", font11, muted);
+      snprintf(b, sizeof b, "%.0f /s", d.requestedCps); smooth(228, 192, b, font14, white, 78);
     } else if (page == 1) {
-      text(14, 43, "CONNECTIONS", 2, white);
-      row(68, "TARGET", d.target);
-      snprintf(b, sizeof b, "%u APP / %s", d.controllers, d.ble); row(88, "CONTROL", b);
-      row(108, "USB", d.usb); row(128, "MODE", d.network);
-      row(148, "SSID", d.ssid); row(168, "IP", d.ip); row(188, "TAILNET", d.vpn);
-      snprintf(b, sizeof b, "RSSI %d DBM", d.rssi); text(14, 205, b, 1, muted);
+      smooth(18, 43, "Connections", font26, white);
+      row(78, "Target", d.target);
+      snprintf(b, sizeof b, "%u app / %s", d.controllers, d.ble); row(97, "Control", b);
+      row(116, "USB", d.usb); row(135, "Mode", d.network);
+      row(154, "SSID", d.ssid); row(173, "IP", d.ip); row(192, "Tailnet", d.vpn);
     } else if (page == 2) {
-      text(14, 43, "SYSTEM HEALTH", 2, white);
-      row(69, "FIRMWARE", "0.3.1 / ESP32-S3");
-      snprintf(b, sizeof b, "%lu SEC", (unsigned long)d.uptime); row(91, "UPTIME", b);
-      snprintf(b, sizeof b, "%lu B", (unsigned long)d.heap); row(113, "HEAP", b);
+      smooth(18, 43, "System", font26, white);
+      row(78, "Firmware", "0.3.2 / ESP32-S3");
+      snprintf(b, sizeof b, "%lu sec", (unsigned long)d.uptime); row(97, "Uptime", b);
+      snprintf(b, sizeof b, "%lu B", (unsigned long)d.heap); row(116, "Heap", b);
       snprintf(b, sizeof b, "%lu B", (unsigned long)d.psram); row(135, "PSRAM", b);
-      snprintf(b, sizeof b, "%lu", (unsigned long)d.late); row(157, "LATE", b);
-      row(179, "ERROR", d.error && *d.error ? d.error : "NONE"); row(200, "RESET", d.reset);
+      snprintf(b, sizeof b, "%lu", (unsigned long)d.late); row(154, "Late", b);
+      row(173, "Error", d.error && *d.error ? d.error : "None"); row(192, "Reset", d.reset);
     } else {
-      text(14, 43, "SETUP / UPDATE", 2, white);
-      text(14, 69, d.ssid, 1, white); text(14, 87, d.password, 1, cyan);
-      text(14, 108, "SCAN TO JOIN", 1, muted); text(14, 126, "192.168.4.1", 1, white);
-      qr(d.qr, 205, 70);
-      text(14, 153, "CONTROLLER TOKEN", 1, muted); text(14, 166, d.token, 1, white);
-      row(188, "UPDATE", d.ota); text(14, 204, "HOLD BOOT 4S FOR SETUP", 1, muted);
+      smooth(18, 43, "Setup", font26, white);
+      smooth(18, 80, d.ssid, font11, white, 177);
+      smooth(18, 99, d.password, font11, cyan, 177);
+      smooth(18, 122, "Scan to join Wi-Fi", font11, muted, 177);
+      smooth(18, 139, "192.168.4.1", font14, white, 177);
+      qr(d.qr, 211, 81);
+      smooth(18, 165, "CONTROLLER TOKEN", font11, muted);
+      smooth(18, 181, d.token, font11, white, 284);
+      row(199, "Update", d.ota);
     }
-    fill(0, 220, 320, 20, 0x10a5);
+    fill(18, 216, 284, 1, 0x1947);
     if (page == 0) {
-      text(12, 226, d.profile, 1, white);
+      smooth(18, 222, d.profile, font11, muted, 208);
+      rounded(247, 226, 4, 4, 2, d.controllers ? mint : muted);
+      snprintf(b, sizeof b, "%u app", d.controllers); smooth(260, 222, b, font11, muted);
     } else {
-      text(12, 226, d.runState(), 1, d.running ? mint : white);
-      text(83, 226, "BOOT 1S START / PRESS STOP", 1, white);
+      smooth(18, 222, d.runState(), font11, d.stateColor(), 86);
+      smooth(111, 222, "BOOT 1s start / press stop", font11, muted);
     }
   }
 
 private:
   uint16_t *fb;
+  static uint16_t blend(uint16_t bg, uint16_t fg, unsigned alpha) {
+    unsigned r = (((bg >> 11) & 31) * (15 - alpha) + ((fg >> 11) & 31) * alpha + 7) / 15;
+    unsigned g = (((bg >> 5) & 63) * (15 - alpha) + ((fg >> 5) & 63) * alpha + 7) / 15;
+    unsigned b = ((bg & 31) * (15 - alpha) + (fg & 31) * alpha + 7) / 15;
+    return (r << 11) | (g << 5) | b;
+  }
+  void smooth(int x, int y, const char *value, const SmoothFont &font, uint16_t color, int maxWidth = 320) {
+    const int right = x + maxWidth < 320 ? x + maxWidth : 320;
+    if (!value) return;
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p) {
+      const unsigned char code = *p >= font.first && *p <= font.last ? *p : '?';
+      if (code < font.first || code > font.last) continue;
+      const auto &glyph = font.glyphs[code - font.first];
+      if (x + glyph.advance > right) break;
+      for (int row = 0; row < glyph.height; ++row)
+        for (int col = 0; col < glyph.width; ++col) {
+          int at = row * glyph.width + col;
+          unsigned packed = font.pixels[glyph.offset + at / 2];
+          unsigned alpha = at % 2 ? packed & 15 : packed >> 4;
+          int px = x + glyph.x + col, py = y + glyph.y + row;
+          if (alpha && px >= 0 && px < right && py >= 0 && py < Height) {
+            auto &pixel = fb[py * Width + px]; pixel = alpha == 15 ? color : blend(pixel, color, alpha);
+          }
+        }
+      x += glyph.advance;
+    }
+  }
+  void rounded(int x, int y, int w, int h, int radius, uint16_t color) {
+    for (int row = 0; row < h; ++row) {
+      int dy = row < radius ? radius - row : row >= h - radius ? row - (h - radius - 1) : 0;
+      int inset = 0;
+      while (inset < radius && (radius - inset) * (radius - inset) + dy * dy > radius * radius) ++inset;
+      fill(x + inset, y + row, w - 2 * inset, 1, color);
+    }
+  }
   // Crisp large numerals without a font asset or runtime allocation.
   void bigNumber(int x, int y, const char *value, uint16_t color) {
     static const uint8_t segments[] = {0x3f,0x06,0x5b,0x4f,0x66,0x6d,0x7d,0x07,0x7f,0x6f};
     for (const char *p = value; *p; ++p) {
       if (*p == '.') { fill(x + 1, y + 43, 6, 6, color); x += 12; continue; }
+      if (*p == ' ') { x += 39; continue; }
       if (*p < '0' || *p > '9') continue;
       uint8_t mask = segments[*p - '0'];
       const int lines[7][4] = {{5,0,22,5},{27,5,5,18},{27,28,5,18},
@@ -149,8 +196,8 @@ private:
           fb[j * 320 + i] = c;
   }
   void row(int y, const char *label, const char *value) {
-    text(10, y, label, 1, 0x4fbc);
-    text(90, y, value, 1, 0xffff);
+    smooth(18, y, label, font11, 0x8495, 76);
+    smooth(97, y, value, font11, 0xf7bf, 205);
   }
   static const char *glyph(char c) {
     static const char *letters[] = {

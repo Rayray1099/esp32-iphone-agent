@@ -67,7 +67,7 @@ struct ClickerView: View {
             .safeAreaInset(edge: .bottom) { controls }
             .task(id: board.connected) { await watchStatus() }
             .onChange(of: photo) { _, item in Task { if let data = try? await item?.loadTransferable(type: Data.self), let imported = UIImage(data: data) { setImage(imported) } } }
-            .confirmationDialog("刪除選取的 \(selectedProfiles.count) 個腳本？", isPresented: $confirmingDeletion, titleVisibility: .visible) {
+            .alert("刪除選取的 \(selectedProfiles.count) 個腳本？", isPresented: $confirmingDeletion) {
                 Button("刪除 \(selectedProfiles.count) 個腳本", role: .destructive) { perform { await deleteSelectedProfiles() } }
                 Button("取消", role: .cancel) {}
             } message: { Text("腳本將從開發板移除，無法復原。正在執行時不能刪除。") }

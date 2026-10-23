@@ -49,6 +49,20 @@ bool annexb_has_idr(const uint8_t *p, size_t len) {
   return false;
 }
 
+int gop_window_end(const gop_buf *g, int first, size_t budget) {
+  if (first < 0 || first >= g->n) return g->n;
+  if (!budget) return g->n;
+  size_t bytes = 0;
+  int end = first;
+  while (end < g->n) {
+    size_t len = g->aus[end].len;
+    if (end > first && (bytes >= budget || len > budget - bytes)) break;
+    bytes += len;
+    end++;
+  }
+  return end;
+}
+
 bool avcc_to_annexb(uint8_t *p, size_t len) {
   size_t i = 0;
   while (i + 4 <= len) {

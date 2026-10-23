@@ -82,8 +82,9 @@ extension ScreenSource {
         configuration.allowsCellularAccess = false
         // A VPN or metered Wi-Fi can be marked expensive. Cellular is prohibited
         // separately; rejecting expensive paths can also reject the local LAN.
-        configuration.timeoutIntervalForRequest = 3
-        configuration.timeoutIntervalForResource = 4
+        // A large IDR may exceed one small batch on a busy ESP32 radio.
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 20
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration, delegate: LocalVideoRedirectPolicy(), delegateQueue: nil)
     }()
@@ -169,7 +170,7 @@ extension ScreenSource {
     @discardableResult
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
         if localActive {
-            let deadline = now() + max(wait, 10)
+            let deadline = now() + max(wait, 30)
             while localActive && now() < deadline {
                 try Task.checkCancellation()
                 // AirPlay sends nothing for an unchanged screen. A recent board watermark
@@ -244,7 +245,8 @@ extension ScreenSource {
             do {
                 var components = URLComponents(url: credentials.url.appendingPathComponent("api/v1/video/frames"), resolvingAgainstBaseURL: false)!
                 components.queryItems = [URLQueryItem(name: "generation", value: String(localGeneration ?? UInt32.max)),
-                                         URLQueryItem(name: "after", value: String(localNext))]
+                                         URLQueryItem(name: "after", value: String(localNext)),
+                                         URLQueryItem(name: "max_bytes", value: "131072")]
                 var request = URLRequest(url: components.url!)
                 request.allowsCellularAccess = false
                 request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
@@ -271,7 +273,11 @@ extension ScreenSource {
                     }
                 }
                 failures = 0
-                try await Task.sleep(nanoseconds: 200_000_000)
+                // Drain catch-up batches immediately. Once caught up, poll at
+                // 5 Hz; the board watermark still gates every model decision.
+                if units.isEmpty || units.last?.boardMs == latest {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
             } catch is CancellationError { return }
             catch {
                 if Task.isCancelled { return }

@@ -145,11 +145,36 @@ static void test_chunker(void) {
   CHECK(vchunk_next(&c, out, 20, 1) == 0);
 }
 
+static void test_gop_pagination(void) {
+  uint8_t arena[200] = {0}, picture[80] = {0};
+  gop_au aus[8];
+  gop_buf g;
+  gop_init(&g, arena, sizeof arena, aus, 8);
+  CHECK(gop_push(&g, picture, 80, true, 100) == 0);
+  CHECK(gop_push(&g, picture, 30, false, 200) == 1);
+  CHECK(gop_push(&g, picture, 40, false, 300) == 2);
+  CHECK(gop_push(&g, picture, 20, false, 400) == 3);
+  CHECK(gop_window_end(&g, 0, 0) == 4); // legacy complete GOP
+  CHECK(gop_window_end(&g, 0, 50) == 1); // oversized IDR is never skipped
+  CHECK(gop_window_end(&g, 1, 50) == 2);
+  CHECK(gop_window_end(&g, 1, 70) == 3);
+  CHECK(gop_window_end(&g, 3, 1) == 4);
+  CHECK(gop_window_end(&g, 4, 50) == 4); // quiet screen, no invented AU
+  int next = 0, visits = 0;
+  while (next < g.n) {
+    int end = gop_window_end(&g, next, 50);
+    CHECK(end > next && end <= g.n);
+    visits += end - next; next = end;
+  }
+  CHECK(visits == 4); // every reference arrives once and in order
+}
+
 int main(void) {
   test_bplist_roundtrip();
   test_bplist_utf16();
   test_gop();
   test_chunker();
+  test_gop_pagination();
   printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
   return fails != 0;
 }

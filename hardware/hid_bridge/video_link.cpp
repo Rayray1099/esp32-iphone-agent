@@ -251,9 +251,12 @@ static void put32(uint8_t *p, uint32_t value) {
 esp_err_t video_http_frames(httpd_req_t *request) {
   char query[100]{}, value[24]{};
   uint32_t wantedGen = UINT32_MAX, after = 0;
+  size_t budget = 0; // Older clients retain the complete-GOP response.
   if (httpd_req_get_url_query_str(request, query, sizeof query) == ESP_OK) {
     if (httpd_query_key_value(query, "generation", value, sizeof value) == ESP_OK) wantedGen = strtoul(value, nullptr, 10);
     if (httpd_query_key_value(query, "after", value, sizeof value) == ESP_OK) after = strtoul(value, nullptr, 10);
+    if (httpd_query_key_value(query, "max_bytes", value, sizeof value) == ESP_OK)
+      budget = std::max<size_t>(16384, std::min<size_t>(strtoul(value, nullptr, 10), 512 * 1024));
   }
   for (int attempt = 0; attempt < 3; ++attempt) {
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -263,9 +266,12 @@ esp_err_t video_http_frames(httpd_req_t *request) {
     bool restart = wantedGen != gen || after > static_cast<uint32_t>(count);
     int first = restart ? 0 : static_cast<int>(after);
     size_t start = first < count ? gop.aus[first].off : gop.used;
-    size_t end = gop.used, config = restart ? gop.cfg_len : 0;
+    uint32_t latest = count ? gop.aus[count - 1].ts : 0;
+    count = gop_window_end(&gop, first, budget);
+    size_t end = count > first ? gop.aus[count - 1].off + gop.aus[count - 1].len : start;
+    size_t config = restart ? gop.cfg_len : 0;
     size_t size = 16 + (count - first + (restart ? 1 : 0)) * 9 + config + end - start;
-    uint32_t up = millis(), latest = count ? gop.aus[count - 1].ts : 0;
+    uint32_t up = millis();
     xSemaphoreGive(lock);
     if (!available) break;
     auto *copy = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM));

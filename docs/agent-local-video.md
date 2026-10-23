@@ -46,6 +46,14 @@ S3VF uses little-endian fields: magic (4 bytes), generation (u32), next index (u
 record count (u32), then records: capture milliseconds (u32), payload size (u32),
 flags (u8: IDR=4, config=8), Annex-B payload. The producer is locked only while
 copying into a bounded PSRAM snapshot; socket I/O occurs after releasing the lock.
+Clients can supply max_bytes=131072 to page through contiguous complete access
+units. A single oversized unit is sent intact. The response next index advances
+only through that page, while X-Video-Captured-Ms always describes the newest
+board capture, so catching up cannot falsely mark an old page current. Omitting
+max_bytes retains the original complete response for older clients.
+AirPlay session state follows its live TCP data socket, since an unchanged iOS
+screen can legitimately send no packets for more than three seconds. Session
+state alone never substitutes for the capture watermark or post-action checks.
 
 The agent requires a decoded frame matching a recent board watermark before its
 first model decision. After actions it requires a newer capture or stops.

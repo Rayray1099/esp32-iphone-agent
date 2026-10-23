@@ -64,6 +64,9 @@ struct SettingsView: View {
                     NavigationLink { AboutView(app: app) } label: {
                         SettingsLabel(title: "About", symbol: "info", color: .gray)
                     }
+                    NavigationLink { AppUpdateView(app: app) } label: {
+                        Label("App 更新", systemImage: "arrow.down.circle")
+                    }
                 }
             }
             .navigationTitle("Settings")

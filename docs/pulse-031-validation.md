@@ -1,5 +1,9 @@
 # PULSE 0.3.1 / iOS build 4 validation — 2026-10-23
 
+Historical snapshot: Actions was subsequently re-enabled. Firmware 0.3.2 and
+iOS build 5 are now built, tested and installed. See
+[pulse-032-validation.md](pulse-032-validation.md) for the current results.
+
 Firmware 0.3.1 was built locally, flashed to the connected ESP32-S3 at
 0x20000, and verified by esptool's flash hash check. The bootloader, partition
 table, original profiles and calibration were preserved. A separate JSON

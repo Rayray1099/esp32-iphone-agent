@@ -11,7 +11,7 @@ void video_snap(const String &id);               // replies "<id> ok" when the G
 void video_bench(const String &id, uint32_t kb);  // replies "<id> ok <ms>"
 
 struct VideoStats {
-  uint32_t kbps, idr_ms, gop_bytes;
+  uint32_t kbps, idr_ms, gop_bytes, latest_ms;
   float fps;
 };
 VideoStats video_stats();

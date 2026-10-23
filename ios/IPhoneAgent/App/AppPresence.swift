@@ -10,13 +10,13 @@ extension AppModel {
     /// Verify that each Home method really backgrounds the app; a HID submission alone cannot prove it.
     /// The model is never asked to do this.
     func leaveApp() async -> Bool {
-        for method in ["cmd+h", "consumer home", "home bar"] {
+        for method in ["AssistiveTouch button 4", "cmd+h", "consumer home"] {
             if inBackground { return true }
             do {
                 switch method {
+                case "AssistiveTouch button 4": _ = try await board.commands.send("button 4")
                 case "cmd+h": try await pointer.key("cmd+h")
-                case "consumer home": _ = try await board.commands.send("homescreen")
-                default: try await pointer.homeBar()
+                default: _ = try await board.commands.send("homescreen")
                 }
             } catch {
                 DebugLog.write("leave app: \(method) failed: \(error.localizedDescription)")

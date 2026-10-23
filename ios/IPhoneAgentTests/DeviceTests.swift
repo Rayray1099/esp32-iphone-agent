@@ -129,18 +129,19 @@ import XCTest
         XCTAssertEqual(device.sent[2], "move 200 400")
     }
 
-    func testHomeFallsBackWhenTheHostAcceptsButIgnoresConsumerHome() async throws {
-        let device = FakeDevice()  // all submissions succeed; no host-side Home acknowledgement
+    func testHomeUsesMappedButtonWithoutClickingAnAppControl() async throws {
+        let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: file) }
         let pointer = Pointer(device: device, calibrationFile: file)
         pointer.finishCalibration(x: 0.5, y: 0.25)
         try await pointer.goHome()
-        XCTAssertEqual(Array(device.sent.prefix(2)), ["homescreen", "key cmd+h"])
-        XCTAssertTrue(device.sent.contains("move 200 800"))
-        XCTAssertEqual(device.sent.last, "click")
+        XCTAssertEqual(device.sent, ["button 4"])
         try await pointer.point(0.5, 0.5)
-        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 2)  // edge invalidates tracked position
+        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 1)
+        try await pointer.goHome()
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 2)
     }
 
     func testShortStatusNotifyIsMergedWithTheFullRead() throws {

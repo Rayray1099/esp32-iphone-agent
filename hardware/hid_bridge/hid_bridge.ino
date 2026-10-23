@@ -3,7 +3,7 @@
 // iOS app on the same phone. It holds no logic; the app decides. Protocol: docs/ble-protocol.md.
 //
 // HID commands (unchanged from the old TCP protocol, the board answers "ok" or "err <why>"):
-//   ping | home | move <dx> <dy> | press | release | click
+//   ping | home | move <dx> <dy> | press | release | click | button <1..5>
 //   scroll <v> <h> | type <ascii text> | key <combo, e.g. cmd+h, enter>
 //   homescreen (the consumer-control Home key, "AC Home": iOS goes to the Home Screen, like a keyboard's home key)
 
@@ -138,6 +138,10 @@ String run(const String &line) {
   sscanf(arg.c_str(), "%ld %ld", &a, &b);
 
   if (cmd == "ping") return "ok";
+  if (cmd == "video-status") {
+    VideoStats v = video_stats();
+    return "ok " + String(millis()) + " " + String(v.latest_ms) + " " + String(v.gop_bytes);
+  }
   if (!clicker_manual_begin()) return "err USB input busy";
   ble_hid_priority(true);
   struct ManualRelease { ~ManualRelease() {
@@ -174,6 +178,12 @@ String run(const String &line) {
       return send(cmd == "press" ? 1 : 0, 0, 0) ? "ok" : "err Bluetooth send failed";
     if (cmd == "click") {
       if (!send(1, 0, 0)) return "err Bluetooth send failed";
+      delay(60);
+      return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
+    }
+    if (cmd == "button") {
+      if (a < 1 || a > 5) return "err button must be 1..5";
+      if (!send(1u << (a - 1), 0, 0)) return "err Bluetooth send failed";
       delay(60);
       return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
     }
@@ -219,6 +229,11 @@ String run(const String &line) {
   if (cmd == "press") { mouse.press(MOUSE_LEFT); return "ok"; }
   if (cmd == "release") { mouse.release(MOUSE_LEFT); return "ok"; }
   if (cmd == "click") { mouse.press(MOUSE_LEFT); delay(60); mouse.release(MOUSE_LEFT); return "ok"; }
+  if (cmd == "button") {
+    if (a < 1 || a > 5) return "err button must be 1..5";
+    uint8_t mask = 1u << (a - 1);
+    mouse.press(mask); delay(60); mouse.release(mask); return "ok";
+  }
   if (cmd == "scroll") { mouse.move(0, 0, a, b); return "ok"; }
   if (cmd == "type") { keyboard.print(arg); return "ok"; }
   if (cmd == "key") return pressCombo(arg) ? "ok" : "err unknown key";
@@ -330,6 +345,9 @@ void statusTask(void *) {
 }
 
 void logLine(const char *msg) {
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (!strncmp(msg, "mirror:", 7)) Serial0.printf("airplay %s\n", msg);
+#endif
 #if DEBUG_SERIAL
   Serial.printf("[%lu] %s\n", millis(), msg);
 #endif

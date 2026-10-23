@@ -9,7 +9,7 @@ import UIKit
     var capturedAt: Double { get }
     var aspect: Double { get }
     /// After a gesture that ended at `since`: wait until the screen shows its result (and fetch it, in snap mode).
-    func afterAction(since: Double) async
+    func afterAction(since: Double) async throws
 }
 
 /// How a run gets its frames: the live stream (`stream on`, the default: a frame in under a second), or one
@@ -82,7 +82,7 @@ extension ScreenSource {
         }
     }
 
-    var live: Bool { mirroring && frame != nil && (device?.connected ?? false) }
+    var live: Bool { mirroring && !broken && frame != nil && (device?.connected ?? false) }
 
     /// Frame width / height (portrait iPhone as a fallback).
     var aspect: Double { size.width > 0 && size.height > 0 ? size.width / size.height : 9 / 19.5 }
@@ -100,7 +100,10 @@ extension ScreenSource {
     }
 
     /// The link (re)connected: chunk numbering starts over.
-    func resetStream() { assembler.reset(); clockOffset = nil }  // the board may have rebooted: its clock too
+    func resetStream() {
+        assembler.reset(); clockOffset = nil
+        frame = nil; capturedAt = 0; updated = 0; broken = true
+    }
 
     /// A board timestamp (status `up`, or a streamed unit) just arrived: keep the smallest offset.
     func boardClock(ms: Int) {
@@ -115,9 +118,11 @@ extension ScreenSource {
     }
 
     private func publish(_ f: H264Decoder.Frame) {
+        let capture = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? now()
+        guard capture >= capturedAt else { return }  // a replay must never move the screen backwards
         frame = f.jpeg
         updated = now()
-        capturedAt = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? updated
+        capturedAt = capture
         broken = false
         if size.width != CGFloat(f.width) || size.height != CGFloat(f.height) {
             size = CGSize(width: f.width, height: f.height)
@@ -141,14 +146,17 @@ extension ScreenSource {
     @discardableResult
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
         if streamOn && mirroring {
-            if frame != nil && now() - updated < maxAge { return "live" }
-            if await fresh(since: now() - maxAge, timeout: wait) != nil { return "live (waited)" }
+            if !broken && frame != nil && now() - capturedAt < maxAge { return "live" }
+            if await fresh(since: now() - maxAge, timeout: wait) != nil && !broken { return "live (waited)" }
         }
         do {
             try await snap()
         } catch is BoardTimeout {
             DebugLog.write("snap timed out; retrying once with a longer timeout")
             try await snap(timeout: snapTimeout * 1.5)
+        }
+        guard !broken, frame != nil, now() - capturedAt < maxAge + wait else {
+            throw BlindError(reason: "螢幕畫面已過期，請重新連接螢幕鏡像輸出後再執行。")
         }
         return "snap"
     }
@@ -179,7 +187,7 @@ extension ScreenSource {
     /// settle, then wait (bounded) for a frame captured after the action; none while the stream is healthy means
     /// the screen did not change, but a broken stream (waiting for an IDR) needs a snap. Snap: give the UI a moment,
     /// snap, and snap once more if the GOP still ends before the action.
-    func afterAction(since: Double) async {
+    func afterAction(since: Double) async throws {
         do {
             if FrameMode.current == .snap {
                 try await Task.sleep(nanoseconds: 700_000_000)
@@ -190,15 +198,23 @@ extension ScreenSource {
                 try await currentFrame()
             } else {
                 await settled()
-                if await newer(than: since, timeout: 1.5) { return }
-                guard broken || !streamOn else { return DebugLog.write("frame: none after the action; screen unchanged") }
-                DebugLog.write("frame: stream stale (waiting for an IDR); snapping")
+                if await newer(than: since, timeout: 2) && !broken { return }
+                // A tiny out-and-back pointer probe forces a screen update even when a tap changed
+                // nothing. A decoded frame from after it proves the entire capture path still works.
+                try Task.checkCancellation()
+                let probeAt = now()
+                try await device?.send("move 1 0")
+                try await device?.send("move -1 0")
+                if await newer(than: probeAt, timeout: 4) && !broken { return }
+                DebugLog.write("frame: no capture after the action/probe; requesting current GOP")
                 try await snap()
             }
         } catch {
             DebugLog.write("frame after action failed: \(error.localizedDescription)")
         }
-        if capturedAt < since { DebugLog.write(String(format: "frame: still %.1f s older than the action", since - capturedAt)) }
+        guard !broken, capturedAt >= since else {
+            throw BlindError(reason: "ESP32 未傳回操作後的新畫面，已停止以避免誤觸。請重新連接螢幕鏡像輸出。")
+        }
     }
 
     /// Waits until the shown frame was captured after `t`; false on timeout.

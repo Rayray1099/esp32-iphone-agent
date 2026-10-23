@@ -197,6 +197,7 @@ VideoStats video_stats() {
   bool fresh = millis() - statAt < 3000;  // mirroring stopped: report zeros, not stale numbers
   xSemaphoreTake(lock, portMAX_DELAY);
   uint32_t gopBytes = gop.used;
+  uint32_t latestMs = !gop.wait_idr && gop.n ? gop.aus[gop.n - 1].ts : 0;
   xSemaphoreGive(lock);
-  return {fresh ? statKbps : 0, statIdrMs, gopBytes, fresh ? statFps : 0};
+  return {fresh ? statKbps : 0, statIdrMs, gopBytes, latestMs, fresh ? statFps : 0};
 }

@@ -111,7 +111,10 @@ final class H264Decoder: @unchecked Sendable {  // confined to `queue`
         guard ok == noErr, let desc else { onError?("bad SPS/PPS \(ok)"); return false }
         let attrs: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA]
         var made: VTDecompressionSession?
-        let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: desc, decoderSpecification: nil,
+        // The agent decodes while another app is in front. Avoid hardware sessions that iOS can
+        // invalidate on backgrounding; at our small mirror resolution software decode is sufficient.
+        let specification = [kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: false] as CFDictionary
+        let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: desc, decoderSpecification: specification,
                                                   imageBufferAttributes: attrs as CFDictionary,
                                                   outputCallback: nil, decompressionSessionOut: &made)
         guard status == noErr, let made else { onError?("decoder create failed \(status)"); return false }

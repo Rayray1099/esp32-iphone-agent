@@ -279,23 +279,23 @@ extension Pointer: Gestures {}
             if name == "done" || name == "fail" { return true }
             let following = i < acts.count - 1 ? acts[i + 1].act["action"]?.str : nil
             if name == "tap" && (following == "type" || following == "key") {  // a missed tap never opened the field
-                timing.frameMs += await settle()
+                timing.frameMs += try await settle()
                 if !Vision.changed(seen, screen?.frame, ignore: spots) {
                     steps[steps.count - 1]["changed"] = .bool(false)
                     return false  // skip the rest; the actor looks again
                 }
             }
         }
-        timing.frameMs += await settle()
+        timing.frameMs += try await settle()
         // feedback for the next round
         steps[steps.count - 1]["changed"] = .bool(Vision.changed(seen, screen?.frame, ignore: spots))
         return false
     }
 
-    private func settle() async -> Double {
+    private func settle() async throws -> Double {
         let started = now()
         onDoing?(.looking)
-        await screen?.afterAction(since: lastActed)
+        try await screen?.afterAction(since: lastActed)
         return (now() - started) * 1000
     }
 

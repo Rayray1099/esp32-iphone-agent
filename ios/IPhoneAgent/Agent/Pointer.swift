@@ -292,18 +292,13 @@ import Foundation
 
     func type(_ text: String) async throws { try await device.send("type \(text)") }
     func key(_ combo: String) async throws { try await device.send("key \(combo)") }
-    /// iOS can accept a consumer report without taking its Home action. Clicking the bottom edge with
-    /// AssistiveTouch returns Home on iPhone; a slow mouse drag there opens the app switcher instead.
+    /// Map mouse button 4 to Home in iOS AssistiveTouch > Devices. Unlike consumer Home and Cmd-H,
+    /// this is handled by AssistiveTouch on hosts that ignore keyboard system shortcuts.
     func goHome() async throws {
+        if (try? await device.send("button 4")) != nil { pos = nil; return }
         _ = try? await device.send("homescreen")
         _ = try? await key("cmd+h")
-        try await Task.sleep(nanoseconds: 350_000_000)
-        try await homeBar()
-    }
-
-    func homeBar() async throws {
-        defer { pos = nil }  // the edge can clamp the pointer; re-home on the next move
-        try await tap(0.5, 1)
+        pos = nil
     }
     func goBack() async throws {
         try await swipe(0.005, 0.45, 0.6, 0.45, hold: false)

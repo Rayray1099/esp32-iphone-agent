@@ -12,6 +12,12 @@ void gop_init(gop_buf *g, uint8_t *arena, size_t cap, gop_au *aus, int max) {
 }
 
 void gop_set_config(gop_buf *g, const uint8_t *annexb, size_t len, uint32_t ts) {
+  // Config starts a new encoder/session. Never pair it with pictures retained
+  // from the previous stream, even if the SPS/PPS happen to match.
+  g->used = 0;
+  g->n = 0;
+  g->gen++;
+  g->wait_idr = true;
   if (len > GOP_CFG_MAX) len = 0;  // never seen in practice; treat as missing
   memcpy(g->cfg, annexb, len);
   g->cfg_len = len;

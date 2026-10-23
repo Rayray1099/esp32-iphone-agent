@@ -138,6 +138,9 @@ String run(const String &line) {
   sscanf(arg.c_str(), "%ld %ld", &a, &b);
 
   if (cmd == "ping") return "ok";
+  if (cmd == "video-info") return "ok " + video_diagnostics();
+  if (cmd == "video-keyframe")
+    return airplay_request_keyframe() ? "ok requested" : "err mirroring not connected";
   if (cmd == "video-status") {
     VideoStats v = video_stats();
     return "ok " + String(millis()) + " " + String(v.latest_ms) + " " + String(v.gop_bytes);

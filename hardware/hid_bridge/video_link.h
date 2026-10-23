@@ -16,6 +16,7 @@ struct VideoStats {
   float fps;
 };
 VideoStats video_stats();
+String video_diagnostics();
 // Authenticated diagnostic download: a consistent Annex-B GOP, copied before network I/O.
 esp_err_t video_http_gop(httpd_req_t *request);
 esp_err_t video_http_frames(httpd_req_t *request);

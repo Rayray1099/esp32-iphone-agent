@@ -16,6 +16,11 @@
 #define AP_AUDIO_DATA_PORT 7011
 #define AP_AUDIO_CTRL_PORT 7012
 #define AP_MIRROR_PORT 7100
+#define AP_EVENT_PORT 7101
+bool ap_events_setup(uint32_t peer);
+void ap_events_stop(void);
+int ap_events_socket(void);
+void ap_events_poll(bool readable);
 
 #define AP_MODEL "AppleTV3,2"
 #define AP_VERSION "220.68"

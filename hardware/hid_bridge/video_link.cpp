@@ -3,6 +3,7 @@
 #include <esp_heap_caps.h>
 #include "ble_link.h"
 #include "src/video/gop.h"
+#include "src/airplay/airplay.h"
 
 // GOP since the latest IDR; overflow drops it until the next IDR. A still screen gets an IDR only every
 // few minutes, so room for ~27 min of AUs at 5 fps (P-frames of a still screen are tiny).
@@ -28,6 +29,7 @@ static uint8_t chunk[VCHUNK_HDR + MAX_CHUNK];
 static uint32_t winStart, winBytes, winFrames, lastIdr;
 static volatile uint32_t statKbps, statIdrMs, statAt;
 static volatile float statFps;
+static uint32_t lastKeyRequest;
 
 // One access unit as notifies. A failed chunk still consumes its seq, so the app sees a gap.
 static bool sendAu(const uint8_t *p, size_t n, uint8_t flags, uint32_t ts) {
@@ -178,11 +180,18 @@ void video_on_au(const uint8_t *au, size_t len, bool idr) {
   }
   xSemaphoreTake(lock, portMAX_DELAY);
   gop_push(&gop, au, len, idr, now);
+  bool renew = gop.wait_idr || gop.used >= GOP_CAP / 2 || gop.n >= MAX_AUS / 2;
   xSemaphoreGive(lock);
+  // Renew well before the bounded replay arena fills. A request is not success:
+  // only receiving an IDR makes snapshot()/HTTP video ready again.
+  if (renew && now - lastKeyRequest >= 2000 && airplay_request_keyframe()) lastKeyRequest = now;
   xTaskNotifyGive(task);
 }
 
-void video_stream(bool on) { streaming = on; }
+void video_stream(bool on) {
+  streaming = on;
+  if (on) airplay_request_keyframe();
+}
 
 static void request(const String &id, bool bench, uint32_t kb) {
   Req r = {{0}, kb, bench};
@@ -200,6 +209,19 @@ VideoStats video_stats() {
   uint32_t latestMs = !gop.wait_idr && gop.n ? gop.aus[gop.n - 1].ts : 0;
   xSemaphoreGive(lock);
   return {fresh ? statKbps : 0, statIdrMs, gopBytes, latestMs, fresh ? statFps : 0};
+}
+
+String video_diagnostics() {
+  char json[240];
+  xSemaphoreTake(lock, portMAX_DELAY);
+  snprintf(json, sizeof json,
+           "{\"ready\":%s,\"waiting_idr\":%s,\"generation\":%lu,\"units\":%d,\"bytes\":%u,\"capacity\":%u,\"overflows\":%lu,\"latest_ms\":%lu}",
+           !gop.wait_idr && gop.n && gop.cfg_len ? "true" : "false",
+           gop.wait_idr ? "true" : "false", (unsigned long)gop.gen, gop.n,
+           (unsigned)gop.used, (unsigned)gop.cap, (unsigned long)gop.overflows,
+           (unsigned long)(gop.n ? gop.aus[gop.n - 1].ts : 0));
+  xSemaphoreGive(lock);
+  return json;
 }
 
 esp_err_t video_http_gop(httpd_req_t *request) {

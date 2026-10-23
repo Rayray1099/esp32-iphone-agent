@@ -96,6 +96,11 @@ static void test_gop(void) {
   CHECK(gop_push(&g, au, 30, false, 5) == -1 && g.n == 0 && g.wait_idr && g.overflows == 1);
   CHECK(gop_push(&g, au, 10, false, 6) == -1);
   CHECK(gop_push(&g, au, 10, true, 7) == 0 && !g.wait_idr);
+  uint32_t prior_gen = g.gen;
+  gop_set_config(&g, au, 5, 8);
+  CHECK(g.gen != prior_gen && g.used == 0 && g.n == 0 && g.wait_idr);
+  CHECK(gop_push(&g, au, 10, false, 9) == -1); // cannot reuse old references with new config
+  CHECK(gop_push(&g, au, 10, true, 10) == 0 && !g.wait_idr && g.cfg_len == 5);
 
   uint8_t idr[] = {0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x65, 9};
   CHECK(annexb_has_idr(idr, sizeof idr));

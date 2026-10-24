@@ -113,9 +113,12 @@ extension BoardTransport {
         }
     }
 
-    /// Called once when a command times out (e.g. video starving control traffic): the app turns the
-    /// stream off, then the command is retried once.
+    /// Transport recovery runs after a timeout. Mutating input is never replayed: a missing reply
+    /// does not prove that a click, relative move, or text entry failed to reach iOS.
     var onTimeout: ((String) async -> Void)?
+    nonisolated static func canReplay(_ command: String) -> Bool {
+        ["video-info", "video-status", "video-auth", "snap"].contains(command)
+    }
 
     /// Send one command; returns the text after "ok" (e.g. bench's ms). Throws DeviceError on err/timeout.
     @discardableResult
@@ -125,7 +128,10 @@ extension BoardTransport {
         } catch let e as BoardTimeout {
             guard command != "ping", !command.hasPrefix("stream"), let onTimeout else { throw e }
             await onTimeout(command)
-            DebugLog.write("cmd retry after timeout: \(command.prefix(40))")
+            guard Self.canReplay(command) else {
+                throw DeviceError(message: "指令回覆逾時，執行結果不確定，未重送點擊或文字。請先檢查目前畫面。")
+            }
+            DebugLog.write("cmd retry after timeout: \(Self.safeCommand(command))")
             return try await send(command, timeout: nil)
         }
     }
@@ -139,6 +145,7 @@ extension BoardTransport {
         let name = String(command.split(separator: " ").first ?? "")
         await lock.lock()
         defer { lock.unlock() }
+        try Task.checkCancellation()  // A cancelled startup must not claim input after waiting behind another command.
         let started = now()
         let id = nextID
         nextID += 1
@@ -165,12 +172,12 @@ extension BoardTransport {
         } catch {
             let ms = (now() - started) * 1000
             if (error as? DeviceError)?.message == "timeout" {
-                if name != "ping" { DebugLog.write(String(format: "cmd #%d %@ → timeout after %.0f ms", id, String(command.prefix(40)), ms)) }
-                throw BoardTimeout(command: String(command.prefix(30)), seconds: timeout)
+                if name != "ping" { DebugLog.write(String(format: "cmd #%d %@ → timeout after %.0f ms", id, Self.safeCommand(command), ms)) }
+                throw BoardTimeout(command: Self.safeCommand(command), seconds: timeout)
             }
-            DebugLog.write(String(format: "cmd #%d %@ → link lost after %.0f ms: %@", id, String(command.prefix(40)), ms,
+            DebugLog.write(String(format: "cmd #%d %@ → link lost after %.0f ms: %@", id, Self.safeCommand(command), ms,
                                   error.localizedDescription))
-            throw DeviceError(message: "board link lost during '\(command.prefix(30))': \(error.localizedDescription)")
+            throw DeviceError(message: "board link lost during '\(Self.safeCommand(command))': \(error.localizedDescription)")
         }
         beat = now()  // last reply of any kind
         if command != "ping" {
@@ -178,8 +185,8 @@ extension BoardTransport {
             onTiming?(String(command.split(separator: " ").first ?? ""), (now() - started) * 1000)
         }
         if name != "ping" {
-            DebugLog.write(String(format: "cmd #%d %@ → %@ %@ (%.0f ms)", id, String(command.prefix(40)),
-                                  reply.ok ? "ok" : "err", String(reply.text.prefix(60)), (now() - started) * 1000))
+            DebugLog.write(String(format: "cmd #%d %@ → %@ %@ (%.0f ms)", id, Self.safeCommand(command),
+                                  reply.ok ? "ok" : "err", command == "video-auth" ? "[credentials omitted]" : String(reply.text.prefix(60)), (now() - started) * 1000))
         }
         guard reply.ok else { throw DeviceError(message: "err " + reply.text) }
         return reply.text
@@ -200,6 +207,12 @@ extension BoardTransport {
         guard transport.writeIfIdle(prefix + body) else { return false }
         logTimes.append(t)
         return true
+    }
+
+    private static func safeCommand(_ command: String) -> String {
+        if command.hasPrefix("type ") { return "type [content omitted]" }
+        if command.hasPrefix("v1 ") { return command.split(separator: " ").prefix(3).joined(separator: " ") + " [payload omitted]" }
+        return String(command.prefix(40))
     }
 
     private func fail(_ id: Int, _ error: Error) {

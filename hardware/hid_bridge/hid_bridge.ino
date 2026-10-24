@@ -3,7 +3,7 @@
 // iOS app on the same phone. It holds no logic; the app decides. Protocol: docs/ble-protocol.md.
 //
 // HID commands (unchanged from the old TCP protocol, the board answers "ok" or "err <why>"):
-//   ping | home | move <dx> <dy> | press | release | click
+//   ping | home | move <dx> <dy> | press | release | click | button <1..5>
 //   scroll <v> <h> | type <ascii text> | key <combo, e.g. cmd+h, enter>
 //   homescreen (the consumer-control Home key, "AC Home": iOS goes to the Home Screen, like a keyboard's home key)
 
@@ -18,9 +18,13 @@
 #include "netcfg.h"
 #include "video_link.h"
 #include "src/airplay/airplay.h"
+#include "clicker_service.h"
+#include <esp_ota_ops.h>
 
 const int STEP = 10;      // max pointer delta per report while moving
 const int STEP_MS = 8;    // report interval; constant pace keeps iOS acceleration predictable
+const int BLE_STEP_MS = 16; // iOS negotiates 15 ms; avoid alternating one/two queued moves per event
+const int BLE_SETTLE_MS = 150; // measured touch landings need host settling after a paced move
 const int HOME_REPORTS = 50;
 #ifndef DEBUG_SERIAL
 #define DEBUG_SERIAL 0  // 1: echo commands and the AirPlay handshake over USB serial
@@ -28,15 +32,46 @@ const int HOME_REPORTS = 50;
 
 const int WATCHDOG_MS = 8000;  // a hung loop (e.g. blocked USB) reboots the board instead of staying offline
 
-USBHIDMouse mouse;
+class BridgeMouse : public USBHIDMouse {
+public:
+  void clearState() { _buttons = 0; }
+};
+BridgeMouse mouse;
+static uint8_t bluetoothButtons = 0;
+static bool sourceKeyHeld = false;
+template <typename Send> bool bluetoothSend(Send send) {
+  uint32_t began = millis();
+  do {
+    if (send()) return true;
+    if (!ble_mouse_connected()) return false;
+    delay(1);
+  } while (millis() - began < 500);
+  return false;
+}
 USBHIDKeyboard keyboard;
 USBHIDConsumerControl consumer;
+void clearManualInputState() {
+  mouse.clearState();
+  bluetoothButtons = 0;
+  sourceKeyHeld = false;
+  if (clicker_bluetooth_output()) {
+    const uint8_t keys[6]{};
+    bluetoothSend([&] { return ble_keyboard_send(0, keys); });
+    bluetoothSend([] { return ble_consumer_send(0); });
+  } else if (tud_mounted() && !tud_suspended()) {
+    keyboard.releaseAll();
+    consumer.release();
+  }
+}
 const uint16_t AC_HOME = 0x0223;  // HID consumer page: AC Home
 static String receiverName = "ESP32 Agent";
 
 void movePaced(long dx, long dy) {
   while (dx || dy) {
-    int sx = constrain(dx, -STEP, STEP), sy = constrain(dy, -STEP, STEP);
+    // iOS acceleration depends on vector speed. Separate axes so a diagonal does not
+    // silently change the gain measured by touch calibration. Keep the report pace fixed.
+    int sx = constrain(dx, -STEP, STEP);
+    int sy = sx && !mouse.isPressed(MOUSE_LEFT) ? 0 : constrain(dy, -STEP, STEP);
     mouse.move(sx, sy);
     dx -= sx;
     dy -= sy;
@@ -61,16 +96,75 @@ uint8_t keyCode(const String &k) {
   return k.length() == 1 ? k[0] : 0;
 }
 
-bool pressCombo(String combo) {
+// Reuse Arduino's US layout and command key codes for both HID transports.
+bool hidKey(uint8_t key, uint8_t &modifiers, uint8_t &usage) {
+  usage = 0;
+  if (key >= 0x88) usage = key - 0x88;
+  else if (key >= 0x80) modifiers |= 1 << (key - 0x80);
+  else {
+    usage = KeyboardLayout_en_US[key];
+    if (!usage) return false;
+    if (usage & 0x80) { modifiers |= 2; usage &= 0x7f; }
+  }
+  return key != 0;
+}
+// iOS Spotlight latches a modifier that goes down in the same report as a key:
+// every later letter then arrives as Shift/Control+letter (Ctrl+I inserts a
+// tab, Ctrl+J submits) until Spotlight restarts. Press and release chords like
+// a physical keyboard: modifiers, keys, keys up, then modifiers up.
+const int CHORD_STAGE_MS = 15;
+template <typename Send> bool stagedKeys(uint8_t modifiers, const uint8_t keys[6], Send send) {
+  const uint8_t none[6]{};
+  if (modifiers) {
+    if (!send(modifiers, none)) return false;
+    delay(CHORD_STAGE_MS);
+  }
+  if (!send(modifiers, keys)) return false;
+  delay(30);
+  if (modifiers) {
+    if (!send(modifiers, none)) return false;
+    delay(CHORD_STAGE_MS);
+  }
+  return send(0, none);
+}
+bool bluetoothKeys(uint8_t modifiers, const uint8_t keys[6]) {
+  return stagedKeys(modifiers, keys, [](uint8_t m, const uint8_t *k) {
+    return bluetoothSend([&] { return ble_keyboard_send(m, k); });
+  });
+}
+bool usbKeys(uint8_t modifiers, const uint8_t keys[6]) {
+  return stagedKeys(modifiers, keys, [](uint8_t m, const uint8_t *k) {
+    KeyReport report{m, 0, {}};
+    memcpy(report.keys, k, 6);
+    keyboard.sendReport(&report);
+    return true;
+  });
+}
+String typeText(const String &text, bool (*sendKeys)(uint8_t, const uint8_t *)) {
+  // Validate first so unsupported UTF-8 never leaves a partially typed command.
+  for (size_t i = 0; i < text.length(); ++i)
+    if (uint8_t(text[i]) >= 128 || !KeyboardLayout_en_US[uint8_t(text[i])]) return "err type supports US ASCII only";
+  for (size_t i = 0; i < text.length(); ++i) {
+    uint8_t modifiers = 0, keys[6]{};
+    hidKey(text[i], modifiers, keys[0]);
+    if (!sendKeys(modifiers, keys)) return "err keyboard send/release failed";
+  }
+  return "ok";
+}
+String pressKeys(String combo, bool (*sendKeys)(uint8_t, const uint8_t *)) {
+  uint8_t modifiers = 0, keys[6]{}, count = 0;
   combo += '+';
   for (int i; (i = combo.indexOf('+')) >= 0; combo = combo.substring(i + 1)) {
-    uint8_t c = keyCode(combo.substring(0, i));
-    if (!c) { keyboard.releaseAll(); return false; }
-    keyboard.press(c);
+    String name = combo.substring(0, i);
+    uint8_t usage;
+    // JIS 英数/かな (HID LANG2/LANG1) select the Latin or Japanese input source
+    // directly. Their usages are beyond Arduino's 8-bit key codes.
+    if (name == "eisu" || name == "kana") usage = name == "eisu" ? 0x91 : 0x90;
+    else if (!hidKey(keyCode(name), modifiers, usage)) return "err unknown key";
+    if (usage && count == 6) return "err unknown key";
+    if (usage) keys[count++] = usage;
   }
-  delay(30);
-  keyboard.releaseAll();
-  return true;
+  return sendKeys(modifiers, keys) ? "ok" : "err keyboard send/release failed";
 }
 
 // A locked or sleeping phone suspends USB; sending HID reports then can stall. Ask it to wake up instead,
@@ -91,6 +185,104 @@ String run(const String &line) {
   sscanf(arg.c_str(), "%ld %ld", &a, &b);
 
   if (cmd == "ping") return "ok";
+  if (cmd == "video-info") return "ok " + video_diagnostics();
+  if (cmd == "video-keyframe")
+    return airplay_request_keyframe() ? "ok requested" : "err mirroring not connected";
+  if (cmd == "video-status") {
+    VideoStats v = video_stats();
+    return "ok " + String(millis()) + " " + String(v.latest_ms) + " " + String(v.gop_bytes);
+  }
+  if (!clicker_manual_begin()) return "err USB input busy";
+  ble_hid_priority(true);
+  struct ManualRelease { ~ManualRelease() {
+    clicker_manual_end(sourceKeyHeld || (clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT)));
+    ble_hid_priority(false);
+  } } manualRelease;
+  // Keep Control held so iOS's hardware input-source menu remains visible
+  // throughout capture/OCR. Its software keyboard can show QWERTY while the
+  // hardware source is Japanese or Zhuyin, so key-cap OCR alone is unsafe.
+  if (cmd == "source") {
+    if (arg != "next" && arg != "release") return "err usage: source next|release";
+    const uint8_t empty[6]{}, space[6]{0x2c};
+    if (clicker_bluetooth_output()) {
+      if (arg == "release") {
+        if (!bluetoothSend([&] { return ble_keyboard_send(0, empty); })) return "err Bluetooth source release failed";
+        sourceKeyHeld = false; return "ok";
+      }
+      // Control first, in its own report: see stagedKeys. It is already down
+      // while the menu stays open, so only the first press adds this report.
+      if (!sourceKeyHeld) {
+        sourceKeyHeld = true;
+        if (!bluetoothSend([&] { return ble_keyboard_send(1, empty); })) return "err Bluetooth source switch failed";
+        delay(CHORD_STAGE_MS);
+      }
+      if (!bluetoothSend([&] { return ble_keyboard_send(1, space); })) return "err Bluetooth source switch failed";
+      delay(40);
+      return bluetoothSend([&] { return ble_keyboard_send(1, empty); }) ? "ok" : "err Bluetooth source hold failed";
+    }
+    if (!usbReady()) return "err phone usb asleep (unlock the phone)";
+    if (arg == "release") { keyboard.releaseAll(); sourceKeyHeld = false; return "ok"; }
+    sourceKeyHeld = true;
+    keyboard.press(KEY_LEFT_CTRL); keyboard.press(' '); delay(40); keyboard.release(' ');
+    return "ok";
+  }
+  if (clicker_bluetooth_output()) {
+    if (!ble_mouse_connected()) return "err Bluetooth mouse not paired/subscribed";
+    auto send = [](uint8_t buttons, int8_t x, int8_t y) {
+      uint32_t began = millis();
+      while (!ble_mouse_send(buttons, x, y)) {
+        if (!ble_mouse_connected() || millis() - began > 500) return false;
+        delay(1);
+      }
+      bluetoothButtons = buttons;
+      return true;
+    };
+    if (cmd == "home") {
+      for (int i = 0; i < HOME_REPORTS; ++i) {
+        if (!send(0, -127, -127)) return "err Bluetooth send failed";
+        delay(2);
+      }
+      delay(BLE_STEP_MS * 2); // let the host consume the final corner reports before movement
+      delay(BLE_SETTLE_MS);
+      return "ok";
+    }
+    if (cmd == "move") {
+      while (a || b) {
+        int x = constrain(a, -STEP, STEP);
+        int y = x && !bluetoothButtons ? 0 : constrain(b, -STEP, STEP);
+        if (!send(bluetoothButtons, x, y)) return "err Bluetooth send failed";
+        a -= x; b -= y; delay(BLE_STEP_MS);
+      }
+      delay(BLE_SETTLE_MS);
+      return "ok";
+    }
+    if (cmd == "press" || cmd == "release")
+      return send(cmd == "press" ? 1 : 0, 0, 0) ? "ok" : "err Bluetooth send failed";
+    if (cmd == "click") {
+      if (!send(1, 0, 0)) return "err Bluetooth send failed";
+      delay(60);
+      return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
+    }
+    if (cmd == "button") {
+      if (a < 1 || a > 5) return "err button must be 1..5";
+      if (!send(1u << (a - 1), 0, 0)) return "err Bluetooth send failed";
+      delay(60);
+      return send(0, 0, 0) ? "ok" : "err Bluetooth release failed";
+    }
+    if (cmd == "scroll") {
+      a = constrain(a, -127, 127); b = constrain(b, -127, 127);
+      return bluetoothSend([&] { return ble_mouse_send(bluetoothButtons, 0, 0, a, b); })
+        ? "ok" : "err Bluetooth scroll failed";
+    }
+    if (cmd == "homescreen") {
+      if (!bluetoothSend([] { return ble_consumer_send(AC_HOME); })) return "err Bluetooth Home unavailable";
+      delay(40);
+      return bluetoothSend([] { return ble_consumer_send(0); }) ? "ok" : "err Bluetooth Home release failed";
+    }
+    if (cmd == "type") return typeText(arg, bluetoothKeys);
+    if (cmd == "key") return pressKeys(arg, bluetoothKeys);
+    return "err unknown command";
+  }
   if (!usbReady()) return "err phone usb asleep (unlock the phone)";
   if (cmd == "home") {  // slam the pointer into the top-left corner
     for (int i = 0; i < HOME_REPORTS; i++) { mouse.move(-127, -127); delay(2); }
@@ -100,9 +292,14 @@ String run(const String &line) {
   if (cmd == "press") { mouse.press(MOUSE_LEFT); return "ok"; }
   if (cmd == "release") { mouse.release(MOUSE_LEFT); return "ok"; }
   if (cmd == "click") { mouse.press(MOUSE_LEFT); delay(60); mouse.release(MOUSE_LEFT); return "ok"; }
+  if (cmd == "button") {
+    if (a < 1 || a > 5) return "err button must be 1..5";
+    uint8_t mask = 1u << (a - 1);
+    mouse.press(mask); delay(60); mouse.release(mask); return "ok";
+  }
   if (cmd == "scroll") { mouse.move(0, 0, a, b); return "ok"; }
-  if (cmd == "type") { keyboard.print(arg); return "ok"; }
-  if (cmd == "key") return pressCombo(arg) ? "ok" : "err unknown key";
+  if (cmd == "type") return typeText(arg, usbKeys);
+  if (cmd == "key") return pressKeys(arg, usbKeys);
   if (cmd == "homescreen") { consumer.press(AC_HOME); delay(40); consumer.release(); return "ok"; }
   return "err unknown command";
 }
@@ -126,6 +323,8 @@ const char *usbState() {
 
 // Board-level commands from the app; everything else is an HID command for run().
 String board(const String &line, const String &id) {
+  String v1 = clicker_command(line);
+  if (v1.length()) return v1;
   int sp = line.indexOf(' ');
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String arg = sp < 0 ? "" : line.substring(sp + 1);
@@ -137,6 +336,14 @@ String board(const String &line, const String &id) {
     return "ok";
   }
   if (cmd == "app" || cmd == "log") {  // debug relay: Mac -> app ("app run ...") and app -> Mac ("log ...")
+    // Compact machine telemetry, never interpret free-form logs as run status.
+    if (cmd == "log" && arg.startsWith("@agent "))
+      agent_progress_update(arg.substring(7));
+    // The app redacts secrets before relaying. Physical UART permits debugging
+    // with the PC radio off and without adding another BLE video subscriber.
+#if ARDUINO_USB_CDC_ON_BOOT
+    if (cmd == "log") Serial0.println("app " + arg);
+#endif
     ble_reply(cmd + " " + arg);         // every peer sees it; each side ignores lines it doesn't handle
     return "ok";
   }
@@ -173,20 +380,23 @@ String board(const String &line, const String &id) {
 String statusJson(bool full) {
   static const char *apStates[] = {"idle", "connected", "streaming"};
   VideoStats v = video_stats();
-  char s[384];
+  char s[512];
   snprintf(s, sizeof s,
            "{\"up\":%lu,\"rst\":\"%s\",\"heap\":%u,\"psram\":%u,\"usb\":\"%s\",\"net\":\"%s\",\"ip\":\"%s\",\"sta\":%d,"
-           "\"ap\":\"%s\",\"w\":%u,\"h\":%u,\"kbps\":%lu,\"fps\":%.1f,\"idr\":%lu,\"gop\":%lu,"
+           "\"output\":\"%s\",\"hid\":\"%s\",\"ap\":\"%s\",\"w\":%u,\"h\":%u,\"kbps\":%lu,\"fps\":%.1f,\"idr\":%lu,\"gop\":%lu,"
            "\"ble\":{\"mtu\":%u,\"phy\":%u,\"kbps\":%lu,\"drop\":%lu,\"rdrop\":%lu,\"n\":%d}}",
            millis(), resetReason(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), usbState(), net_mode(), net_ip().c_str(), net_peers(),
+           clicker_output(), clicker_bluetooth_output() ? (ble_mouse_connected() ? "ok" : "off") : usbState(),
            apStates[airplay_state()], cfg_width(), cfg_height(), (unsigned long)v.kbps, v.fps, (unsigned long)v.idr_ms,
            (unsigned long)v.gop_bytes, ble_mtu(), ble_phy(), (unsigned long)ble_kbps(), (unsigned long)ble_drops(),
            (unsigned long)ble_reply_drops(), ble_peers());
   if (full) return s;
   // MTU below ~250 (before the MTU exchange): keep only the fields the app needs to stay alive
-  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
-           millis(), resetReason(), usbState(), net_mode(), apStates[airplay_state()], ble_mtu());
+  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"output\":\"%s\",\"hid\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
+           millis(), resetReason(), usbState(), clicker_output(),
+           clicker_bluetooth_output() ? (ble_mouse_connected() ? "ok" : "off") : usbState(),
+           net_mode(), apStates[airplay_state()], ble_mtu());
   return s;
 }
 
@@ -201,6 +411,9 @@ void statusTask(void *) {
 }
 
 void logLine(const char *msg) {
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (!strncmp(msg, "mirror:", 7)) Serial0.printf("airplay %s\n", msg);
+#endif
 #if DEBUG_SERIAL
   Serial.printf("[%lu] %s\n", millis(), msg);
 #endif
@@ -222,6 +435,11 @@ void startAirplay() {
 
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+  // The native USB port belongs to the phone during hardware testing. Keep the
+  // board's CH340/UART connector usable for the same local debug protocol.
+  Serial0.begin(115200);
+#endif
 #if DEBUG_SERIAL
   for (int i = 0; i < 30 && !Serial; i++) delay(100);  // give a serial monitor 3 s to catch the boot lines
 #endif
@@ -234,11 +452,19 @@ void setup() {
   esp_task_wdt_reconfigure(&wdt);
   esp_task_wdt_add(NULL);
 
-  net_begin();
-  if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
-  ble_begin("ESP32 Agent " + board_suffix());
-  startAirplay();
-  xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
+  clicker_begin();
+  net_begin(clicker_wifi_off());
+  display_begin();
+  if (!clicker_radios_off()) {
+    if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
+    ble_begin("ESP32 Agent " + board_suffix());
+    if (!clicker_wifi_off()) {
+      startAirplay();
+      controller_begin();
+    }
+    xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
+  }
+  // Pending OTA images are confirmed only after local services have survived startup.
   Serial.printf("boot %s: free internal heap %u (largest %u), PSRAM %u, reset %s\n", receiverName.c_str(),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -247,26 +473,62 @@ void setup() {
 
 void loop() {
   static bool linked = false;
+  static bool healthChecked = false;
+  if (!healthChecked && millis() > 10000) {
+    healthChecked = true;
+    if (clicker_healthy() && display_healthy() && heap_caps_get_total_size(MALLOC_CAP_SPIRAM) >= 7*1024*1024)
+      esp_ota_mark_app_valid_cancel_rollback();
+    else {
+      esp_ota_img_states_t state;
+      if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY)
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+  }
   esp_task_wdt_reset();
   net_poll();
+  clicker_poll();
+  display_poll();
+  if (!clicker_wifi_off()) remote_poll();
   if (linked && !ble_connected()) {
-    mouse.release(MOUSE_LEFT);  // a gesture cut off mid-way must not leave the button held (long press)
-    keyboard.releaseAll();
+    clicker_link_lost();
+    if (!clicker_busy()) { mouse.release(MOUSE_LEFT); keyboard.releaseAll(); }
     video_stream(false);
   }
   linked = ble_connected();
 
   String line;
-  if (Serial.available()) {  // USB serial takes the same `<id> <command>` lines, for debugging from a Mac
-    line = Serial.readStringUntil('\n');
+  Stream *debug = Serial.available() ? static_cast<Stream *>(&Serial) : nullptr;
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (!debug && Serial0.available()) debug = &Serial0;
+#endif
+  if (debug) {
+    line = debug->readStringUntil('\n');
     line.trim();
-    if (line.startsWith("0 net ")) { net_request(line.substring(6)); Serial.println("0 ok"); return; }
+    // Physical serial only: never expose these credentials through BLE/status.
+    if (line == "0 localinfo") {
+      debug->println("0 {\"token\":\"" + controller_token() +
+                     "\",\"network\":" + net_json() + "}");
+      return;
+    }
+    if (line.startsWith("0 net ")) { int code; debug->println("0 " + clicker_api("network", "PUT", line.substring(6), code)); return; }
     int sp = line.indexOf(' ');
     String id = sp < 0 ? line : line.substring(0, sp);
-    Serial.println(id + " " + board(sp < 0 ? "" : line.substring(sp + 1), id));
+    String command = sp < 0 ? "" : line.substring(sp + 1);
+    if (command.startsWith("v1 ")) {
+      // UART/CDC are not limited by a BLE notification's MTU.
+      int methodEnd = command.indexOf(' ', 3);
+      if (methodEnd < 0) { debug->println(id + " err missing API path"); return; }
+      int pathEnd = command.indexOf(' ', methodEnd + 1);
+      String path = pathEnd < 0 ? command.substring(methodEnd + 1) : command.substring(methodEnd + 1, pathEnd);
+      int code;
+      String result = clicker_api(path, command.substring(3, methodEnd),
+                                 pathEnd < 0 ? "" : command.substring(pathEnd + 1), code);
+      debug->println(id + (code < 400 ? " ok " : " err ") + result);
+    } else debug->println(id + " " + board(command, id));
     return;
   }
-  if (!ble_pop_cmd(line, 50)) return;
+  if (clicker_radios_off()) return;
+  if (!ble_pop_cmd(line, 5)) return;
   int sp = line.indexOf(' ');
   String id = sp < 0 ? line : line.substring(0, sp);
   String rest = sp < 0 ? "" : line.substring(sp + 1);

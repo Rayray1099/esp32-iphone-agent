@@ -40,14 +40,17 @@ import UIKit
     unowned let app: AppModel
     var link = -1  // board link the pointer was last calibrated on
     private var hide: Task<Void, Never>?
-    private var current: Task<Void, Never>?
+    var current: Task<Void, Never>?
+    @Published var accuracyTarget: CGPoint?
+    @Published var accuracy: [PointerAccuracySample] = []
+    @Published var accuracySummary: String?
 
     init(app: AppModel) { self.app = app }
 
     var busy: Bool { phase.step != nil }
 
-    /// The mouse is up (board connected, USB HID mounted).
-    var boardReady: Bool { app.board.connected && app.board.status?.usb == "ok" }
+    /// The selected USB or Bluetooth mouse is ready.
+    var boardReady: Bool { app.board.connected && app.board.status?.inputReady == true }
     var mirroring: Bool { app.board.status?.ap == "streaming" }
 
     /// Calibration is due: never done, the screen shape changed, or the learned correction drifted.
@@ -69,13 +72,19 @@ import UIKit
 
     /// Before a run: calibrate if needed and wait for it. True when the pointer is calibrated.
     func ensureCalibrated() async -> Bool {
-        while busy { try? await Task.sleep(nanoseconds: 200_000_000) }
+        while busy {
+            if Task.isCancelled { return false }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        if Task.isCancelled { return false }
         if !app.pointer.calibrated && boardReady { await run(why: String(localized: "before a run")) }
         return app.pointer.calibrated
     }
 
     /// One automatic calibration, on the board when the app is in front.
     func run(why: String) async {
+        accuracySummary = nil
+        accuracyTarget = nil
         reason = why
         problem = nil
         progress = nil
@@ -87,7 +96,7 @@ import UIKit
         current = nil
     }
 
-    private func openBoard() {
+    func openBoard() {
         boardOpen = true
         app.probe.begin()
     }
@@ -100,6 +109,7 @@ import UIKit
     /// The board's Back button: stop whatever runs and close the board.
     func cancel() {
         current?.cancel()
+        accuracyTarget = nil
         if busy || phase == .needsTap { app.say("calibration: cancelled") }
         progress = nil
         phase = app.pointer.calibrated ? .done : .idle

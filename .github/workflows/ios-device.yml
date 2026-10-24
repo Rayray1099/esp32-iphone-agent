@@ -1,0 +1,48 @@
+name: iOS device IPA for local signing
+on:
+  workflow_dispatch:
+    inputs:
+      simulator_tests:
+        description: Run iPhone unit and UI tests before packaging
+        type: boolean
+        default: true
+      skip_ui_tests:
+        description: Skip UI tests already passed for this change
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ios-device-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  device:
+    runs-on: macos-26
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install xcodegen
+      - run: bash tools/build_openh264.sh
+      - run: xcodegen generate
+      - name: Test on iPhone simulator
+        if: inputs.simulator_tests
+        run: |
+          sim=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; ds=json.load(sys.stdin)["devices"]; print(next(d["udid"] for devices in ds.values() for d in devices if d["name"].startswith("iPhone")))')
+          extra=()
+          if [ '${{ inputs.skip_ui_tests }}' = 'true' ]; then extra+=(-skip-testing:IPhoneAgentUITests); fi
+          xcodebuild test -scheme IPhoneAgent -destination "platform=iOS Simulator,id=$sim" -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO "${extra[@]}"
+      - name: Build for physical iPhone and iPad
+        run: |
+          xcodebuild build -scheme IPhoneAgent -configuration Release -destination 'generic/platform=iOS' -derivedDataPath build-device CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          mkdir -p unsigned/Payload
+          cp -R build-device/Build/Products/Release-iphoneos/IPhoneAgent.app unsigned/Payload/
+          cd unsigned
+          /usr/bin/zip -qry ../ESP32-Agent-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESP32-Agent-unsigned-device-IPA
+          retention-days: 3
+          path: ios/ESP32-Agent-unsigned.ipa

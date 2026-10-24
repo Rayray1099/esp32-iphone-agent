@@ -5,6 +5,10 @@ struct IPhoneAgentApp: App {
     @StateObject private var app = AppModel.shared
 
     init() {
+        // This distribution defaults to Traditional Chinese; retain a later user language choice.
+        if UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["AppleLanguages"] == nil {
+            UserDefaults.standard.set(["zh-Hant-TW", "en"], forKey: "AppleLanguages")
+        }
         _ = AppModel.shared  // also on a background launch for an App Intent, which shows no scene
         CrashReports.shared.start()
     }
@@ -16,7 +20,7 @@ struct IPhoneAgentApp: App {
     }
 }
 
-enum AppTab: Hashable { case agent, runs, settings }
+enum AppTab: Hashable { case agent, clicker, runs, settings }
 
 /// The setup screens; Home's status chips open the one that fixes a problem.
 enum SetupPage: Int, CaseIterable, Identifiable {
@@ -36,6 +40,9 @@ struct RootView: View {
                      intents: app.intents, recorder: app.recorder)
                 .tabItem { Label("Agent", systemImage: "face.smiling") }
                 .tag(AppTab.agent)
+            ClickerView(app: app)
+                .tabItem { Label("Clicker", systemImage: "cursorarrow.click.2") }
+                .tag(AppTab.clicker)
             RunsView(app: app, runs: app.runs, agent: app.agent)
                 .tabItem { Label("Runs", systemImage: "play.rectangle.on.rectangle") }
                 .tag(AppTab.runs)

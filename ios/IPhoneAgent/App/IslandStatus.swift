@@ -65,7 +65,7 @@ struct IslandStatus: Equatable {
         let minimal: String
         switch act["action"]?.str {
         case "tap": minimal = String(localized: "Tap")
-        case "type": minimal = String(localized: "Type")
+        case "type", "search": minimal = String(localized: "Type")
         case "key": minimal = String(localized: "Key")
         case "swipe": minimal = String(localized: "Swipe")
         case "path", "circle": minimal = String(localized: "Draw")
@@ -81,7 +81,7 @@ struct IslandStatus: Equatable {
         switch act["action"]?.str {
         case "tap":
             return say({ String(localized: "Tapping \($0)") }, String(localized: "Tapping…"), target(act["thought"]?.str ?? ""))
-        case "type":
+        case "type", "search":
             return say({ String(localized: "Typing \($0)") }, String(localized: "Typing…"), act["text"]?.str)
         case "key":
             return say({ String(localized: "Pressing \($0)") }, String(localized: "Pressing a key…"), act["combo"]?.str)
@@ -106,7 +106,7 @@ struct IslandStatus: Equatable {
 
     /// Where the pointer is going, relative to the screen center; typing looks down at the keyboard.
     static func gaze(_ act: JObject) -> CGPoint {
-        if ["type", "key"].contains(act["action"]?.str ?? "") { return CGPoint(x: 0, y: 0.7) }
+        if ["type", "search", "key"].contains(act["action"]?.str ?? "") { return CGPoint(x: 0, y: 0.7) }
         if act["action"]?.str == "swipe" {
             let dx = (act["x2"]?.double ?? 0) - (act["x1"]?.double ?? 0)
             let dy = (act["y2"]?.double ?? 0) - (act["y1"]?.double ?? 0)

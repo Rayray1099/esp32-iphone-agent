@@ -61,12 +61,17 @@ struct LLMError: LocalizedError {
         // "auto": send max_tokens; switch for good if the server asks for max_completion_tokens
         if Self.tokenParams.contains(tokenParam) { (self.tokenParam, auto) = (tokenParam, false) }
         else { (self.tokenParam, auto) = ("max_tokens", true) }
-        self.session = session ?? {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 30  // no byte for this long = hung; the agent retries
-            config.timeoutIntervalForResource = 90
-            return URLSession(configuration: config)
-        }()
+        self.session = session ?? URLSession(configuration: Self.wifiConfiguration())
+    }
+
+    /// Screen uploads and model calls must never fall back to a cellular route.
+    static func wifiConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.default
+        config.allowsCellularAccess = false
+        config.allowsExpensiveNetworkAccess = false
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 90
+        return config
     }
 
     func chat(system: String, text: String, image: Data? = nil, maxTokens: Int = 600,
@@ -138,8 +143,12 @@ struct LLMError: LocalizedError {
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         guard let base = URL(string: trimmed) else { throw LLMError(message: "invalid base URL") }
         var request = URLRequest(url: base.appendingPathComponent("models"), timeoutInterval: 20)
+        request.allowsCellularAccess = false
+        request.allowsExpensiveNetworkAccess = false
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let session = URLSession(configuration: wifiConfiguration())
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw LLMError(message: "GET /models: HTTP \(status) \(String(decoding: data.prefix(200), as: UTF8.self))")
@@ -155,6 +164,8 @@ struct LLMError: LocalizedError {
         var body = body
         body[tokenParam] = maxTokens
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        request.allowsCellularAccess = false
+        request.allowsExpensiveNetworkAccess = false
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }

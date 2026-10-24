@@ -12,6 +12,12 @@ void gop_init(gop_buf *g, uint8_t *arena, size_t cap, gop_au *aus, int max) {
 }
 
 void gop_set_config(gop_buf *g, const uint8_t *annexb, size_t len, uint32_t ts) {
+  // Config starts a new encoder/session. Never pair it with pictures retained
+  // from the previous stream, even if the SPS/PPS happen to match.
+  g->used = 0;
+  g->n = 0;
+  g->gen++;
+  g->wait_idr = true;
   if (len > GOP_CFG_MAX) len = 0;  // never seen in practice; treat as missing
   memcpy(g->cfg, annexb, len);
   g->cfg_len = len;
@@ -47,6 +53,20 @@ bool annexb_has_idr(const uint8_t *p, size_t len) {
   for (size_t i = 0; i + 4 < len; i++)
     if (p[i] == 0 && p[i + 1] == 0 && p[i + 2] == 1 && (p[i + 3] & 0x1f) == 5) return true;
   return false;
+}
+
+int gop_window_end(const gop_buf *g, int first, size_t budget) {
+  if (first < 0 || first >= g->n) return g->n;
+  if (!budget) return g->n;
+  size_t bytes = 0;
+  int end = first;
+  while (end < g->n) {
+    size_t len = g->aus[end].len;
+    if (end > first && (bytes >= budget || len > budget - bytes)) break;
+    bytes += len;
+    end++;
+  }
+  return end;
 }
 
 bool avcc_to_annexb(uint8_t *p, size_t len) {

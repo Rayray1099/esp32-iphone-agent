@@ -1,4 +1,19 @@
 import Foundation
+import UIKit
+
+/// Match the normal run's background allowance while a physical input test
+/// leaves this app. Expiration ends the assertion, as RunSession does.
+@MainActor private final class InputTestBackground {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    init() {
+        id = UIApplication.shared.beginBackgroundTask(withName: "english-input-test") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
+    }
+}
 
 /// Drive the app without touching the phone, for development:
 ///   iphoneagent://run?task=<urlencoded>   iphoneagent://calibrate   iphoneagent://stop
@@ -44,9 +59,48 @@ extension AppModel {
         case "bench": debugCommand("bench", kb: Int(rest) ?? 256)
         case "status": say(statusSummary)
         case "log": relayHistory(Int(rest) ?? 50)
+        case "accuracy": calibrator.testSmallTargets(precise: rest == "precise")
+        case "search" where !rest.isEmpty: testEnglishSearch(rest)
         case "mode":
             if let mode = FrameMode(rawValue: rest) { setFrameMode(mode) } else { say("frame mode: \(FrameMode.current.rawValue)") }
         default: say("debug: unknown app command \"\(line.prefix(40))\"")
+        }
+    }
+
+    /// UART development harness uses the same search/type path as the actor.
+    private func testEnglishSearch(_ query: String) {
+        guard !agent.running, !startingAgent, !calibrator.busy else { return say("input test: busy") }
+        Task {
+            let began = now()
+            var claimed = false
+            var background: InputTestBackground?
+            defer { background?.end() }
+            do {
+                guard await waitReady(mirroring: true) else { throw BlindError() }
+                let readyAt = now()
+                _ = try await board.commands.send("v1 POST input/claim {}")
+                claimed = true
+                try await feed.stream(true)
+                _ = try await feed.currentFrame()
+                // Paste path needs the pasteboard while still in the foreground.
+                var pastedEarly = false
+                if PasteInput.needed(query) {
+                    guard pointer.clipboard.put(query) else {
+                        throw DeviceError(message: "無法寫入剪貼簿，未輸入文字。")
+                    }
+                    pastedEarly = true
+                }
+                background = InputTestBackground()
+                guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
+                let searchAt = now()
+                try await pointer.search(query, pasted: pastedEarly)
+                let typedAt = now()
+                try await feed.afterAction(since: searchAt)
+                say(String(format: "input test phases: ready %.2f s, setup %.2f s, search %.2f s, final frame %.2f s",
+                           readyAt - began, searchAt - readyAt, typedAt - searchAt, now() - typedAt))
+                say(String(format: "input test: search sent and fresh screen verified in %.2f s", now() - began))
+            } catch { say("input test failed: " + error.localizedDescription) }
+            if claimed { _ = try? await board.commands.send("v1 POST input/release {}") }
         }
     }
 
@@ -69,13 +123,13 @@ extension AppModel {
     /// One line: board, mirroring, calibration, model and run.
     var statusSummary: String {
         let s = board.status
-        let boardText = board.connected ? "connected usb \(s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
+        let boardText = board.connected ? "connected output \(s?.output ?? "usb") hid \(s?.hid ?? s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
             : "not connected"
         let mirror = feed.live ? String(format: "live %.2f", feed.aspect) : "off"
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }
             ?? "none"
         let model = settings.isConfigured ? (settings.currentModel ?? "auto") : "not set"
-        let run = agent.running ? "running step \(agent.steps.count)" : "idle"
+        let run = startingAgent ? "preparing \(startupStage.title)" : agent.running ? "running step \(agent.steps.count)" : startupFailure.map { "start failed: " + $0 } ?? "idle"
         return "status: frames \(FrameMode.current.rawValue); board \(boardText); mirroring \(mirror); calibration \(cal) (\(calibrator.phase)); "
             + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height))"
     }
@@ -124,13 +178,13 @@ extension AppModel {
         }
     }
 
-    /// Board connected (and USB up), plus mirroring streaming when asked; waits up to `timeout` s.
+    /// Board and selected HID output ready, plus mirroring when asked.
     func waitReady(mirroring: Bool, timeout: Double = 30) async -> Bool {
         if MockMode.on { return true }
         let deadline = now() + timeout
         while now() < deadline {
             let s = board.status
-            if board.connected && s?.usb == "ok" && (!mirroring || s?.ap == "streaming") { return true }
+            if board.connected && s?.inputReady == true && (!mirroring || s?.ap == "streaming") { return true }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false

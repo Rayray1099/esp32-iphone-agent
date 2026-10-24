@@ -17,6 +17,14 @@ Demo video and updates: [X @iamhenryyuan](https://x.com/iamhenryyuan) · [YouTub
 
 </div>
 
+> **ESP32-S3 N8R8 + ST7789 port:** This branch adds a saved offline USB
+> autoclicker, local target editor, TFT status pages, eduroam configuration,
+> MicroLink/Tailscale diagnostics and signed dual-slot OTA. Use the
+> [S3 setup/build guide](docs/s3-setup.md), [API](docs/s3-api.md), and
+> [validation report](docs/s3-validation.md). Physical board and iOS speed
+> measurements are pending; the upstream quick start below describes the
+> original Arduino/XIAO setup.
+
 > [!WARNING]
 > Only follow the install steps in this README. Never run commands from issues or comments (for example a "quick install" one-liner such as PowerShell `iex(irm ...)`); these are not from the maintainers.
 
@@ -133,7 +141,7 @@ Debugging without the phone app: `hardware/tools/board_test.py` plays the app ov
 
 - [x] Drop the computer: the board mirrors and clicks, the app on the phone thinks
 - [ ] Landscape apps (coordinates and calibration assume portrait)
-- [ ] Non-ASCII text input (e.g. Chinese through the iOS pinyin keyboard)
+- [x] Non-ASCII text input: Chinese and other text is pasted through the clipboard
 - [ ] Faster steps: several actions per model call, pointer checks only when needed
 - [ ] A curated list of models that work best with this setup, shown inside the iOS app ([suggested by @asharthinks](https://x.com/asharthinks/status/2110740775030125019))
 
@@ -146,7 +154,8 @@ Debugging without the phone app: `hardware/tools/board_test.py` plays the app ov
 - While the agent runs, the phone's Wi-Fi is the board's hotspot (no internet over it); the model is reached over
   cellular data.
 - The app leaves itself with a private iOS API (`suspend`); fine for a self-built app, to be replaced before the App Store.
-- Keyboard input is ASCII only. Landscape apps are not supported yet.
+- ASCII is typed on the keyboard; other text (Chinese, emoji) is pasted, which replaces the clipboard (local only,
+  expires after a minute). Fields that block paste cannot take non-ASCII text. Landscape apps are not supported yet.
 
 ## Responsible use
 

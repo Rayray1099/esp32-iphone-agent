@@ -112,6 +112,9 @@
 		F6301B26DAF28C96D09F6D8E /* RunShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B84B4F1C81E697ACB30630 /* RunShare.swift */; };
 		F77EB884A6AE61AC290911D9 /* AssistiveTouchSpots.swift in Sources */ = {isa = PBXBuildFile; fileRef = D317C60AA727B6A20A589DAC /* AssistiveTouchSpots.swift */; };
 		FC0BD528A254726D869FDF5B /* ModelRequestFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A8E3AF04195B586F10EDC4 /* ModelRequestFailure.swift */; };
+		CE173A5FF028B8A33EC8D1E6 /* ClickerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C704CF21F449978CCCAD867 /* ClickerProfile.swift */; };
+		101865BF34DD4C8D55F1B092 /* ClickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A558F250B0BC8CCB016104 /* ClickerView.swift */; };
+		B65EA5BB4C42DEF50C06F615 /* ClickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E4B05551FF03B0E9821A91D /* ClickerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -254,6 +257,9 @@
 		F775C2B833B33E951A629957 /* PromptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTests.swift; sourceTree = "<group>"; };
 		F960AA3F536A5DF20F8E908A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FCC7FAA4989F36E7F9B4C021 /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
+		1C704CF21F449978CCCAD867 /* ClickerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickerProfile.swift; sourceTree = "<group>"; };
+		C6A558F250B0BC8CCB016104 /* ClickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickerView.swift; sourceTree = "<group>"; };
+		6E4B05551FF03B0E9821A91D /* ClickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -319,6 +325,7 @@
 		3C577534E113D39F4ACCDA56 /* IPhoneAgentTests */ = {
 			isa = PBXGroup;
 			children = (
+				6E4B05551FF03B0E9821A91D /* ClickerTests.swift */,
 				DCDFF66F3082E46B88130ABC /* AgentTests.swift */,
 				23A9A9D917B2B2FC534E7DBA /* DeviceTests.swift */,
 				A54BC007EE5C64A13CDEE9EE /* IslandTests.swift */,
@@ -337,6 +344,7 @@
 		587F0A7B34E5140D82A4CAAC /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				C6A558F250B0BC8CCB016104 /* ClickerView.swift */,
 				E948F0EBC262C7ABF8E413E5 /* AboutView.swift */,
 				A5AF33659891C2EFF70D356A /* BoardProximityIllustration.swift */,
 				E2E3712143A195602610004B /* CalibrationToast.swift */,
@@ -445,6 +453,7 @@
 		8DC40723EB5CCA5BC6501702 /* Board */ = {
 			isa = PBXGroup;
 			children = (
+				1C704CF21F449978CCCAD867 /* ClickerProfile.swift */,
 				02C2C2C9EBE006E896050646 /* BoardCommands.swift */,
 				33107099A7483949F03FBDB6 /* BoardLink.swift */,
 				0DFECC30B2ADEB1BB69072EC /* BoardProtocol.swift */,
@@ -628,6 +637,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B65EA5BB4C42DEF50C06F615 /* ClickerTests.swift in Sources */,
 				7D859BE4F1E945FE96CD8C61 /* AgentTests.swift in Sources */,
 				607B1520E654F13F1F304F4D /* DeviceTests.swift in Sources */,
 				2CF6A30C3D72E05EEBC6FFED /* IslandTests.swift in Sources */,
@@ -646,6 +656,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				101865BF34DD4C8D55F1B092 /* ClickerView.swift in Sources */,
+				CE173A5FF028B8A33EC8D1E6 /* ClickerProfile.swift in Sources */,
 				0A553429560D1697C678A682 /* AboutView.swift in Sources */,
 				2671E23FE56D69B0CEAB4EF6 /* Actions.swift in Sources */,
 				E8FA336F818FBAB651C32BEE /* AgentActivity.swift in Sources */,
@@ -918,7 +930,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -984,7 +996,7 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};

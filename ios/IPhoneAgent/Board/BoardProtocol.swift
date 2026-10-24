@@ -23,6 +23,12 @@ struct BoardStatus: Codable, Equatable {
     var heap: Int?
     var psram: Int?
     var usb: String?   // ok | asleep | off
+    var output: String? // usb | bluetooth (absent on older firmware)
+    var hid: String?    // selected output: ok | asleep | off
+    var inputReady: Bool {
+        if let hid { return hid == "ok" }
+        return (output == nil || output == "usb") && usb == "ok"
+    }
     var net: String?   // ap | sta | none
     var ip: String?
     var sta: Int?
@@ -39,6 +45,7 @@ struct BoardStatus: Codable, Equatable {
         var m = n
         m.up = n.up ?? up; m.rst = n.rst ?? rst; m.heap = n.heap ?? heap; m.psram = n.psram ?? psram
         m.usb = n.usb ?? usb; m.net = n.net ?? net; m.ip = n.ip ?? ip; m.sta = n.sta ?? sta; m.ap = n.ap ?? ap
+        m.output = n.output ?? output; m.hid = n.hid ?? hid
         m.w = n.w ?? w; m.h = n.h ?? h; m.kbps = n.kbps ?? kbps; m.fps = n.fps ?? fps; m.idr = n.idr ?? idr
         m.gop = n.gop ?? gop
         let a = ble ?? BLE(), b = n.ble ?? BLE()
@@ -53,6 +60,7 @@ struct NetConfig: Codable, Equatable {
     var ssid: String?
     var pass: String?
     var ip: String?
+    var uplink_ssid: String?
 }
 
 /// A `reply` notify: `<id> ok [extra]` or `<id> err <reason>`.

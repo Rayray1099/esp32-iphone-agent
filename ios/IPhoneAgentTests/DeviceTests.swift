@@ -69,6 +69,24 @@ import XCTest
         XCTAssertEqual(board.lines.count, 2)
     }
 
+    func testCancelledQueuedInputClaimNeverReachesTheBoard() async throws {
+        let board = FakeBoard()
+        board.silent = true
+        let channel = CommandChannel(transport: board)
+        board.channel = channel
+        let first = Task { try await channel.send("ping") }
+        while board.lines.isEmpty { await Task.yield() }
+        let claim = Task { try await channel.send("v1 POST input/claim {}") }
+        await Task.yield()
+        claim.cancel()
+        let id = try XCTUnwrap(board.lines.first?.split(separator: " ").first)
+        channel.handleReply("\(id) ok")
+        _ = try await first.value
+        do { _ = try await claim.value; XCTFail("cancelled claim succeeded") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(board.lines.count, 1)
+    }
+
     func testLinkDownFailsCommandsInFlight() async {
         let board = FakeBoard()
         board.silent = true
@@ -101,15 +119,116 @@ import XCTest
         XCTAssertEqual(s.fps, 4.8)
     }
 
-    func testPointerRehomesEveryTenGestures() async throws {
+    func testSelectedInputReadinessAndLegacyFirmware() throws {
+        func status(_ json: String) throws -> BoardStatus {
+            try XCTUnwrap(BoardStatus.decode(Data(json.utf8)))
+        }
+        XCTAssertTrue(try status(#"{"usb":"ok"}"#).inputReady)
+        XCTAssertFalse(try status(#"{"usb":"off"}"#).inputReady)
+        let bluetooth = try status(#"{"usb":"off","output":"bluetooth","hid":"ok"}"#)
+        XCTAssertTrue(bluetooth.inputReady)
+        // A live USB cable must not mask the selected Bluetooth target disconnecting.
+        let disconnected = try status(#"{"usb":"ok","output":"bluetooth","hid":"off"}"#)
+        XCTAssertFalse(bluetooth.merged(with: disconnected).inputReady)
+        XCTAssertFalse(try status(#"{"usb":"ok","output":"bluetooth"}"#).inputReady)
+        let compact = try status(#"{"up":2,"hid":"off","output":"bluetooth"}"#)
+        XCTAssertEqual(bluetooth.merged(with: compact).output, "bluetooth")
+        XCTAssertFalse(bluetooth.merged(with: compact).inputReady)
+    }
+
+    func testDistinctPointerGesturesUseTheCalibratedPathFromHome() async throws {
         let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
         let pointer = Pointer(device: device, calibrationFile: file)
         pointer.finishCalibration(x: 0.5, y: 0.25)  // span 400 x 800
+        try await pointer.point(0.5, 0.5)
+        try await pointer.point(0.25, 0.75)
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400",
+                                     "home", "move 100 600", "home", "move 200 400"])
+    }
+
+    func testRepeatedPointerTargetReusesItsKnownPosition() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
         for _ in 0..<11 { try await pointer.point(0.5, 0.5) }
+        try await pointer.point(0.5001, 0.5001)  // same rounded mouse coordinates
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400"])
+    }
+
+    func testPointerDragStaysContinuousAndReanchorsItsEndpointForTheNextGesture() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.drag([CGPoint(x: 0.25, y: 0.25), CGPoint(x: 0.5, y: 0.5),
+                                CGPoint(x: 0.75, y: 0.75)], hold: false)
+        try await pointer.point(0.75, 0.75)
+        try await pointer.point(0.75, 0.75)
+        XCTAssertEqual(device.sent, ["release", "home", "move 100 200", "press",
+                                     "move 100 200", "move 100 200", "release", "home", "move 300 600"])
+    }
+
+    func testPointerReconnectReleasesAndHomesEvenAtTheSameTarget() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.point(0.5, 0.5)
+        device.links += 1
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400",
+                                     "release", "home", "move 200 400"])
+    }
+
+    func testFailedHomeCannotReuseThePreviousTarget() async throws {
+        @MainActor final class FailingHomeDevice: HIDDevice {
+            var links = 1
+            var connected = true
+            var sent: [String] = []
+            var failHome = false
+            func waitConnected(_ timeout: TimeInterval) async -> Bool { connected }
+            func send(_ command: String) async throws -> String {
+                sent.append(command)
+                if command == "home", failHome {
+                    failHome = false
+                    throw DeviceError(message: "partial home")
+                }
+                return ""
+            }
+        }
+        let device = FailingHomeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.point(0.5, 0.5)
+        device.failHome = true
+        do { try await pointer.point(0.25, 0.25); XCTFail("partial home succeeded") }
+        catch { XCTAssertTrue(error is DeviceError) }
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400", "home", "home", "move 200 400"])
+    }
+
+    func testHomeUsesMappedButtonWithoutClickingAnAppControl() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.goHome()
+        XCTAssertEqual(device.sent, ["button 4"])
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 1)
+        try await pointer.goHome()
+        try await pointer.point(0.5, 0.5)
         XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 2)
-        XCTAssertEqual(device.sent[0], "release")  // a new link: let go first
-        XCTAssertEqual(device.sent[2], "move 200 400")
     }
 
     func testShortStatusNotifyIsMergedWithTheFullRead() throws {

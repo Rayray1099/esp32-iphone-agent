@@ -19,3 +19,11 @@ uint32_t ble_kbps();     // video bytes out, last second
 uint32_t ble_drops();    // video notifies we failed to send
 uint32_t ble_reply_drops();  // replies that never got out to a subscribed peer
 int ble_peers();         // connected centrals
+bool ble_mouse_connected();
+String ble_mouse_label(); // friendly label when supplied by this bonded peer; otherwise its ID suffix
+int ble_controller_peers(); // subscribed controller apps, distinct from HID output
+String ble_mouse_status_json();  // connection state only; no addresses or keys
+bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel = 0, int8_t pan = 0);
+bool ble_keyboard_send(uint8_t modifiers, const uint8_t keys[6]);
+bool ble_consumer_send(uint16_t usage);
+void ble_hid_priority(bool active); // pause video until a manual HID command completes

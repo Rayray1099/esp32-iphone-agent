@@ -20,6 +20,9 @@ struct SettingsView: View {
                             value: board.connected ? board.name : String(localized: "Not connected"))
                     }
                     CalibrationRow(app: app, calibrator: app.calibrator, pointer: app.pointer)
+                    Button { app.calibrator.testSmallTargets() } label: {
+                        SettingsLabel(title: "20 pt 小按鈕精準度測試", symbol: "scope", color: .cyan)
+                    }.disabled(!app.pointer.calibrated || !app.calibrator.boardReady || app.calibrator.busy)
                     Button { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) } label: {
                         HStack {
                             SettingsLabel(title: "Language", symbol: "globe", color: .indigo)
@@ -64,6 +67,9 @@ struct SettingsView: View {
                     NavigationLink { AboutView(app: app) } label: {
                         SettingsLabel(title: "About", symbol: "info", color: .gray)
                     }
+                    NavigationLink { AppUpdateView(app: app) } label: {
+                        Label("App 更新", systemImage: "arrow.down.circle")
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -98,7 +104,7 @@ struct BoardSettingsView: View {
                 }
                 .padding(.vertical, Space.xs)
                 if board.connected, let s = board.status {
-                    ValueRow(title: "Mouse", value: s.usb ?? "–")
+                    ValueRow(title: "Mouse", value: "\(s.output == "bluetooth" ? "Bluetooth" : "USB") · \(s.hid ?? s.usb ?? "–")")
                     ValueRow(title: "Mirroring", value: s.ap ?? "–")
                 }
             }
@@ -140,7 +146,7 @@ struct BoardSettingsView: View {
             } header: {
                 Text("Wi-Fi")
             } footer: {
-                Text("While joined, the internet goes over cellular data. Switch back in Settings › Wi-Fi when you are done.")
+                Text("AI 請求只使用 Wi-Fi。請讓 iPhone 與開發板連上同一個可上網的 Wi-Fi；開發板熱點可離線設定，但不會透過行動數據連線。")
             }
             if board.pairedID != nil {
                 Section {

@@ -117,9 +117,13 @@ struct SeePage: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var streaming: Bool { board.connected && board.status?.ap == "streaming" }
+    private var sharedWiFi: String? {
+        guard let ssid = board.net?.uplink_ssid, !ssid.isEmpty else { return nil }
+        return ssid
+    }
     // The board counts hotspot clients, so joining by hand is detected without the hotspot entitlement.
     private var joined: Bool {
-        app.otherWiFi == nil && (onWiFi || app.join == .joined || app.hotspotSSID != nil || streaming || (board.connected && (board.status?.sta ?? 0) > 0))
+        sharedWiFi != nil || (app.otherWiFi == nil && (onWiFi || app.join == .joined || app.hotspotSSID != nil || streaming || (board.connected && (board.status?.sta ?? 0) > 0)))
     }
     private var failure: String? { if case .failed(let why) = app.join { return why } else { return nil } }
 
@@ -127,7 +131,11 @@ struct SeePage: View {
         VStack(spacing: Space.xl) {
             PageHeader(mood: streaming ? .success : (app.join.busy || joined) ? .listening : failure != nil ? .failure : .idle,
                        title: "Let Me See the Screen",
-                       message: "Screen Mirroring goes to the board over its own Wi-Fi.")
+                       message: "螢幕鏡像可透過同一個 Wi-Fi 傳送到開發板。AI 連線僅使用 Wi-Fi。")
+            if let sharedWiFi {
+                Label("請讓 iPhone 也連上 \(sharedWiFi)，保留 Wi-Fi 網際網路連線。", systemImage: "wifi")
+                    .font(.subheadline).multilineTextAlignment(.center)
+            }
             Panel {
                 CheckRow(title: "Join the board's Wi-Fi", done: joined, active: !joined, waiting: app.join.busy && !joined,
                          detail: joined ? nil : app.join == .verifying ? "Checking the connection…"
@@ -137,7 +145,7 @@ struct SeePage: View {
             }
             if !joined {
                 if let net = app.manualHotspot, let ssid = net.ssid, failure != nil { manual(ssid: ssid, pass: net.pass) }
-                Label("Internet uses cellular data while on the board's Wi-Fi.", systemImage: "antenna.radiowaves.left.and.right")
+                Label("開發板熱點僅供本機設定。使用雲端 AI 時，請將手機與開發板連上同一個可上網的 Wi-Fi。", systemImage: "wifi")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("I'm already on the board's Wi-Fi") { onWiFi = true }.font(.footnote)
             } else if !streaming {
@@ -203,15 +211,17 @@ struct ActPage: View {
     @ObservedObject var calibrator: AutoCalibrator
     @ObservedObject var pointer: Pointer
 
-    private var mouse: Bool { MockMode.on || board.status?.usb == "ok" }
+    private var mouse: Bool { MockMode.on || board.status?.inputReady == true }
     private var mirroring: Bool { MockMode.on || board.status?.ap == "streaming" }
 
     var body: some View {
         VStack(spacing: Space.xl) {
             PageHeader(mood: pointer.calibrated ? .success : calibrator.busy ? .acting : .idle,
                        title: "Let Me Use the Pointer",
-                       message: "The board is a USB mouse. iOS shows its pointer only with AssistiveTouch on. Then I calibrate on a grid, like a 3D printer levelling its bed.")
+                       message: "開發板可透過 USB 或藍牙控制指標。請開啟 AssistiveTouch，再執行校準。")
             if !pointer.calibrated { MiniPhoneDemo(kind: .assistiveTouch) }
+            Text("AI 助理需要返回主畫面：設定 → 輔助使用 → 觸控 → AssistiveTouch → 裝置 → ESP32 Agent → 自訂其他按鈕。按下滑鼠按鈕 4，將它設成「主畫面」。")
+                .font(.footnote).foregroundStyle(.secondary)
             Panel {
                 CheckRow(title: "Mouse connected", done: mouse, active: !mouse, waiting: board.connected && !mouse)
                 Divider().padding(.vertical, Space.s)

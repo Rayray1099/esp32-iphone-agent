@@ -1,0 +1,5 @@
+# Arduino 3.3.12 lists the USB library in CMake but omits its selective Kconfig.
+config ARDUINO_SELECTIVE_USB
+    bool "Build Arduino USB HID library"
+    default y
+    depends on ARDUINO_SELECTIVE_COMPILATION && TINYUSB_ENABLED

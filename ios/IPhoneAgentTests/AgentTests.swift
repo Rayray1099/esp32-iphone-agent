@@ -3,6 +3,16 @@ import XCTest
 
 /// Port of server/tests/test_agent.py.
 @MainActor final class AgentTests: XCTestCase {
+    func testStaleCaptureStopsBeforeAnotherModelDecision() async throws {
+        let screen = StaleScreen()
+        let phone = FakeGestures()
+        let model = FakeModel { _ in "THINK: Tap the visible target\nDO: tap 500 500" }
+        let agent = AgentLoop(phone: phone, screen: screen, actor: model, planner: model, trace: nil)
+        do { _ = try await agent.step(); XCTFail("Expected stale screen failure") }
+        catch { XCTAssertTrue(error is BlindError) }
+        XCTAssertEqual(phone.calls, ["tap"])
+        XCTAssertEqual(model.prompts.count, 1)
+    }
     func testPlannerTimeoutRetriesOnceAndChecksGateAgain() async throws {
         let model = TimeoutModel(failures: 1)
         let agent = AgentLoop(phone: nil, screen: FakeScreen(), actor: model, planner: model, trace: nil)
@@ -198,6 +208,15 @@ import XCTest
     var aspect = 0.46
 }
 
+@MainActor private final class StaleScreen: ScreenSource {
+    var live = true
+    var frame: Data? = Data([0xff, 0xd8])
+    var updated = 0.0
+    var capturedAt = 0.0
+    var aspect = 0.46
+    func afterAction(since: Double) async throws { throw BlindError(reason: "stale capture") }
+}
+
 @MainActor final class FakeDevice: HIDDevice {
     var links = 1
     var connected = true
@@ -213,6 +232,7 @@ import XCTest
     func swipe(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, hold: Bool) async throws { calls.append("swipe") }
     func drag(_ points: [CGPoint], hold: Bool) async throws { calls.append("drag") }
     func type(_ text: String) async throws { calls.append("type") }
+    func search(_ text: String) async throws { calls.append("search") }
     func key(_ combo: String) async throws { calls.append("key") }
     func goHome() async throws { calls.append("home") }
     func goBack() async throws { calls.append("back") }

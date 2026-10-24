@@ -69,6 +69,7 @@ static bool send_all(int fd, const void *p, size_t n) {
 static void close_conn(ap_conn *c) {
   if (ap_mirror_owner == c) {
     ap_mirror_stop();
+    ap_events_stop();
     ap_mirror_owner = NULL;
   }
   close(c->fd);
@@ -166,13 +167,17 @@ static void server_task(void *arg) {
     FD_ZERO(&rf);
     FD_SET(lfd, &rf);
     int maxfd = lfd;
+    int eventfd = ap_events_socket();
+    if (eventfd >= 0) { FD_SET(eventfd, &rf); if (eventfd > maxfd) maxfd = eventfd; }
     for (int i = 0; i < MAX_CONNS; i++)
       if (conns[i].fd >= 0) {
         FD_SET(conns[i].fd, &rf);
         if (conns[i].fd > maxfd) maxfd = conns[i].fd;
       }
     struct timeval tv = {1, 0};
-    if (select(maxfd + 1, &rf, NULL, NULL, &tv) <= 0) continue;
+    int ready = select(maxfd + 1, &rf, NULL, NULL, &tv);
+    ap_events_poll(ready > 0 && eventfd >= 0 && FD_ISSET(eventfd, &rf));
+    if (ready <= 0) continue;
     if (FD_ISSET(lfd, &rf)) {
       struct sockaddr_in peer;
       socklen_t pl = sizeof peer;

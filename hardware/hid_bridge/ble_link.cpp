@@ -10,8 +10,14 @@
 #include "ble_link.h"
 #include <atomic>
 #include <NimBLEDevice.h>
+#include <NimBLEHIDDevice.h>
+#include <esp_timer.h>
+#include <cJSON.h>
+#include "tusb.h"
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
+#include "clicker_service.h"
+#include "video_link.h"
 
 static_assert(MYNEWT_VAL(MSYS_1_BLOCK_COUNT) == 64 && MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 320,
               "nimble_cfg.h not applied: build with hardware/flash.sh");
@@ -40,6 +46,15 @@ struct Text {
 };
 
 static NimBLEServer *server;
+static NimBLECharacteristic *mouseReport;
+static NimBLECharacteristic *keyboardReport, *consumerReport;
+static std::atomic<int> mousePeer{-1};
+static int64_t lastMouseReportUs = 0;
+static uint8_t mouseMap[] = {
+  TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(2)),
+  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(1)),
+  TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(3))
+};
 static NimBLECharacteristic *chars[CH_COUNT], *netChar;
 static QueueHandle_t cmdQueue, replyQueue;
 static SemaphoreHandle_t statusLock;
@@ -48,6 +63,21 @@ static bool statusDirty;
 static std::atomic<int> ctrlPending;  // replies queued or sending + a status waiting; video yields to them
 static volatile int peers[MAX_PEERS] = {-1, -1};
 static volatile bool subscribed[MAX_PEERS][CH_COUNT];
+static bool mouseSubscribed[MAX_PEERS]{};
+static bool keyboardSubscribed[MAX_PEERS]{}, consumerSubscribed[MAX_PEERS]{};
+static portMUX_TYPE labelLock = portMUX_INITIALIZER_UNLOCKED;
+static char peerLabels[MAX_PEERS][25]{};
+static char peerSuffixes[MAX_PEERS][6]{};
+static int slotFor(int h);
+static void rememberPeer(NimBLEConnInfo &ci) {
+  int slot = slotFor(ci.getConnHandle());
+  if (slot < 0) return;
+  std::string address = ci.getIdAddress().toString();
+  portENTER_CRITICAL(&labelLock);
+  if (address.size() >= 5)
+    strlcpy(peerSuffixes[slot], address.c_str() + address.size() - 5, sizeof peerSuffixes[slot]);
+  portEXIT_CRITICAL(&labelLock);
+}
 static uint32_t winStart, winBytes;  // touched by the video task only
 static volatile uint32_t kbps;
 static std::atomic<uint32_t> drops, replyDrops;
@@ -110,13 +140,20 @@ static void tuneLink(uint16_t h) {
 class ServerCb : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *s, NimBLEConnInfo &ci) override {
     if (slotFor(ci.getConnHandle()) < 0) { s->disconnect(ci.getConnHandle()); return; }
+    rememberPeer(ci);
     logConn("connect", ci);
     tuneLink(ci.getConnHandle());
     if (peerCount() < MAX_PEERS) NimBLEDevice::startAdvertising();  // room for the debug harness
   }
   void onDisconnect(NimBLEServer *s, NimBLEConnInfo &ci, int reason) override {
+    if (mousePeer == ci.getConnHandle()) mousePeer = -1;
     int i = slotOf(ci.getConnHandle());
     if (i >= 0) {
+      portENTER_CRITICAL(&labelLock);
+      peerLabels[i][0] = peerSuffixes[i][0] = 0;
+      portEXIT_CRITICAL(&labelLock);
+      mouseSubscribed[i] = false;
+      keyboardSubscribed[i] = consumerSubscribed[i] = false;
       for (int c = 0; c < CH_COUNT; c++) subscribed[i][c] = false;
       peers[i] = -1;
     }
@@ -128,7 +165,15 @@ class ServerCb : public NimBLEServerCallbacks {
   void onPhyUpdate(NimBLEConnInfo &ci, uint8_t tx, uint8_t rx) override {
     BLE_LOG("conn %u: phy tx %uM rx %uM\n", ci.getConnHandle(), tx, rx);
   }
-  void onAuthenticationComplete(NimBLEConnInfo &ci) override { logConn("security", ci); }
+  void onAuthenticationComplete(NimBLEConnInfo &ci) override {
+    rememberPeer(ci);
+    logConn("security", ci);
+    int slot = slotOf(ci.getConnHandle());
+    if (slot >= 0 && mouseSubscribed[slot] && ci.isEncrypted() && ci.isBonded()) {
+      int expected = -1;
+      mousePeer.compare_exchange_strong(expected, ci.getConnHandle());
+    }
+  }
 };
 
 class CharCb : public NimBLECharacteristicCallbacks {
@@ -136,6 +181,49 @@ class CharCb : public NimBLECharacteristicCallbacks {
     const NimBLEAttValue &raw = c->getValue();
     String v(raw.c_str(), raw.length());
     if (c == netChar) { net_request(v); return; }
+    // Grant the local video reader its existing controller token only over a bonded,
+    // encrypted BLE connection. This command never goes through the serial log relay.
+    if (v.endsWith(" video-auth")) {
+      String id = v.substring(0, v.indexOf(' '));
+      if (!ci.isEncrypted() || !ci.isBonded()) {
+        String reply = id + " err Pair and encrypt the BLE connection first";
+        chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle());
+        return;
+      }
+      String reply = id + " ok {\"url\":\"http://" + net_ip() +
+                "\",\"token\":\"" + controller_token() + "\"}";
+      if (chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle()))
+        video_request_keyframe();  // Wi-Fi startup can catch a fresh IDR instead of replaying an old GOP.
+      return;
+    }
+    // Versioned commands can carry credentials and certificates. Require the same
+    // encrypted, bonded channel as the existing network characteristic.
+    if (v.indexOf(" v1 ") >= 0 && (!ci.isEncrypted() || !ci.isBonded())) {
+      String requestId = v.substring(0, v.indexOf(' '));
+      ble_reply(requestId + " err Pair and encrypt the BLE connection first");
+      NimBLEDevice::startSecurity(ci.getConnHandle());
+      return;
+    }
+    // Bind the friendly label to the authenticated sender, never to another
+    // connected phone. A controller and the HID target may be different peers.
+    int labelAt = v.indexOf(" v1 PUT device/label ");
+    if (labelAt >= 0) {
+      auto *j = cJSON_Parse(v.substring(labelAt + 21).c_str());
+      auto *name = cJSON_GetObjectItemCaseSensitive(j, "name");
+      int slot = slotFor(ci.getConnHandle());
+      bool ok = slot >= 0 && cJSON_IsString(name) && name->valuestring[0];
+      if (ok) {
+        char label[25]{}; size_t n = 0;
+        for (const unsigned char *p = (const unsigned char *)name->valuestring; *p && n < sizeof label - 1; ++p)
+          if (*p >= 32 && *p < 127) label[n++] = *p;
+        portENTER_CRITICAL(&labelLock);
+        strlcpy(peerLabels[slot], n ? label : "PHONE", sizeof peerLabels[slot]);
+        portEXIT_CRITICAL(&labelLock);
+      }
+      cJSON_Delete(j);
+      ble_reply(v.substring(0, labelAt) + (ok ? " ok {\"ok\":true}" : " err invalid device label"));
+      return;
+    }
     char line[CMD_MAX] = {0};
     v.trim();
     strncpy(line, v.c_str(), CMD_MAX - 1);
@@ -148,6 +236,20 @@ class CharCb : public NimBLECharacteristicCallbacks {
     c->setValue((const uint8_t *)j.c_str(), j.length());
   }
   void onSubscribe(NimBLECharacteristic *c, NimBLEConnInfo &ci, uint16_t sub) override {
+    if (c == keyboardReport || c == consumerReport) {
+      int slot = slotFor(ci.getConnHandle());
+      if (slot >= 0) (c == keyboardReport ? keyboardSubscribed : consumerSubscribed)[slot] = sub & 1;
+      return;
+    }
+    if (c == mouseReport) {
+      int slot = slotFor(ci.getConnHandle());
+      if (slot >= 0) mouseSubscribed[slot] = sub & 1;
+      if ((sub & 1) && ci.isEncrypted() && ci.isBonded()) {
+        int expected = -1;
+        mousePeer.compare_exchange_strong(expected, ci.getConnHandle());
+      } else if (mousePeer == ci.getConnHandle()) mousePeer = -1;
+      return;
+    }
     int i = indexOf(c), p = sub & 1 ? slotFor(ci.getConnHandle()) : slotOf(ci.getConnHandle());
     if (i >= 0 && p >= 0) subscribed[p][i] = sub & 1;
     BLE_LOG("conn %u: %s %s\n", ci.getConnHandle(), sub & 1 ? "subscribed" : "unsubscribed",
@@ -168,9 +270,12 @@ static int onGap(ble_gap_event *e, void *) {  // NimBLEServerCallbacks has no da
 
 extern "C" uint16_t ble_hs_hci_avail_pkts;  // free controller ACL buffers (NimBLE host, ble_hs_hci.c)
 static uint16_t ctrlMax;                     // the controller's total, read at boot with no links up
+static std::atomic<bool> hidPriority{false};
+void ble_hid_priority(bool active) { hidPriority = active; }
 
 // Room for a video notify of n bytes in the controller: its ACL fragments plus those already in flight.
 static bool ctrlRoom(size_t n) {
+  if (hidPriority.load()) return false;
   if (ble_hs_hci_avail_pkts > ctrlMax) ctrlMax = ble_hs_hci_avail_pkts;
   bool cmds = millis() - lastCmdMs < CMD_ACTIVE_MS;
   int frags = (int)((n + 3 + 4 + 250) / 251), limit = cmds && VIDEO_CTRL_PKTS < ctrlMax ? VIDEO_CTRL_PKTS : ctrlMax;
@@ -275,15 +380,42 @@ void ble_begin(const String &name) {
   cmd->setCallbacks(&charCb);
   netChar->setCallbacks(&charCb);
   for (auto *c : chars) c->setCallbacks(&charCb);
+  auto *hid = new NimBLEHIDDevice(server);
+  hid->setManufacturer("ESP32 Agent");
+  // The old 0x0200 identity advertised only a mouse. Distinguish the complete
+  // keyboard + mouse report database when a host refreshes its HID identity.
+  hid->setPnp(0x02, 0x303A, 0x4001, 0x0300);
+  hid->setHidInfo(0, 0x02);
+  hid->setReportMap(mouseMap, sizeof mouseMap);
+  mouseReport = hid->getInputReport(1);
+  mouseReport->setCallbacks(&charCb);
+  keyboardReport = hid->getInputReport(2);
+  consumerReport = hid->getInputReport(3);
+  keyboardReport->setCallbacks(&charCb);
+  consumerReport->setCallbacks(&charCb);
+  // TUD_HID_REPORT_DESC_KEYBOARD declares report 2's one-byte LED output as
+  // well as its eight-byte input. Register it after the existing input reports
+  // to keep their handles stable for bonded hosts. No callback is needed: the
+  // GATT characteristic retains the latest host LED value for reads.
+  hid->getOutputReport(2)->setValue(uint8_t(0));
+  hid->setBatteryLevel(100);
   server->start();
+  // Firmware upgrades change the HID report map before server->start(), so
+  // NimBLE's runtime service-change flag does not see them. Its API also marks
+  // persisted CCCDs so disconnected bonded subscribers refresh on reconnect.
+  // Retain all bonds; a host must acknowledge this indication itself.
+  server->sendServiceChangedIndication();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   NimBLEAdvertisementData data, scan;
   data.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-  data.setCompleteServices(NimBLEUUID(UUID("0000")));
-  scan.setName(name.c_str());
+  data.setAppearance(HID_KEYBOARD);
+  data.addServiceUUID(NimBLEUUID(uint16_t(0x1812)));
+  data.setName(name.c_str());
+  scan.addServiceUUID(NimBLEUUID(UUID("0000")));
   adv->setAdvertisementData(data);
   adv->setScanResponseData(scan);
+  adv->enableScanResponse(true);
   NimBLEDevice::startAdvertising();
   xTaskCreatePinnedToCore(txTask, "ble_tx", 3072, NULL, 3, NULL, 1);
   ctrlMax = ble_hs_hci_avail_pkts;
@@ -294,6 +426,77 @@ void ble_begin(const String &name) {
 }
 
 bool ble_connected() { return peerCount() > 0; }
+bool ble_mouse_connected() { return mousePeer.load() >= 0; }
+String ble_mouse_label() {
+  int slot = slotOf(mousePeer.load());
+  if (slot < 0 || !ble_mouse_connected()) return "NO TARGET";
+  char name[25], suffix[6];
+  portENTER_CRITICAL(&labelLock);
+  strlcpy(name, peerLabels[slot], sizeof name);
+  strlcpy(suffix, peerSuffixes[slot], sizeof suffix);
+  portEXIT_CRITICAL(&labelLock);
+  return String(name[0] ? name : "PHONE") + " / " + suffix;
+}
+int ble_controller_peers() {
+  int count = 0;
+  for (int i = 0; i < MAX_PEERS; ++i)
+    if (peers[i] >= 0 && subscribed[i][CH_REPLY]) ++count;
+  return count;
+}
+String ble_mouse_status_json() {
+  auto *label = cJSON_CreateString(ble_mouse_label().c_str());
+  char *encoded = cJSON_PrintUnformatted(label);
+  String result = "{\"bonds\":" + String(NimBLEDevice::getNumBonds()) +
+    ",\"report_handle\":" + String(mouseReport ? mouseReport->getHandle() : 0) +
+    ",\"target\":" + String(encoded ? encoded : "\"\"") +
+    ",\"controllers\":" + String(ble_controller_peers()) +
+    ",\"peers\":[";
+  cJSON_free(encoded); cJSON_Delete(label);
+  bool comma = false;
+  for (int i = 0; i < MAX_PEERS; ++i) {
+    int h = peers[i];
+    if (h < 0) continue;
+    auto ci = server->getPeerInfoByHandle(h);
+    if (comma) result += ',';
+    comma = true;
+    result += String("{\"encrypted\":") + (ci.isEncrypted() ? "true" : "false") +
+      ",\"bonded\":" + (ci.isBonded() ? "true" : "false") +
+      ",\"mouse_subscribed\":" + (mouseSubscribed[i] ? "true" : "false") +
+      ",\"keyboard_subscribed\":" + (keyboardSubscribed[i] ? "true" : "false") +
+      ",\"consumer_subscribed\":" + (consumerSubscribed[i] ? "true" : "false") +
+      ",\"interval_us\":" + String(ci.getConnInterval() * 1250) + "}";
+  }
+  return result + "]}";
+}
+static bool hidSend(NimBLECharacteristic *characteristic, const uint8_t *report, size_t size) {
+  int peer = mousePeer.load();
+  int64_t now = esp_timer_get_time();
+  // Notifications acknowledge host submission, not phone tap reception. Bound
+  // controller backlog to two packets and pace retries outside the BLE task.
+  if (peer < 0 || !characteristic || now - lastMouseReportUs < 1000 ||
+      os_msys_num_free() < MBUF_RESERVE || ctrlMax - ble_hs_hci_avail_pkts >= 2)
+    return false;
+  if (!characteristic->notify(report, size, peer)) return false;
+  lastMouseReportUs = now;
+  return true;
+}
+bool ble_mouse_send(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel, int8_t pan) {
+  const uint8_t report[] = {buttons, uint8_t(dx), uint8_t(dy), uint8_t(wheel), uint8_t(pan)};
+  return hidSend(mouseReport, report, sizeof report);
+}
+bool ble_keyboard_send(uint8_t modifiers, const uint8_t keys[6]) {
+  int slot = slotOf(mousePeer.load());
+  if (slot < 0 || !keyboardSubscribed[slot]) return false;
+  uint8_t report[8] = {modifiers, 0};
+  memcpy(report + 2, keys, 6);
+  return hidSend(keyboardReport, report, sizeof report);
+}
+bool ble_consumer_send(uint16_t usage) {
+  int slot = slotOf(mousePeer.load());
+  if (slot < 0 || !consumerSubscribed[slot]) return false;
+  uint8_t report[] = {uint8_t(usage), uint8_t(usage >> 8)};
+  return hidSend(consumerReport, report, sizeof report);
+}
 
 bool ble_pop_cmd(String &line, uint32_t wait_ms) {
   char buf[CMD_MAX];

@@ -17,6 +17,8 @@ import UIKit
     let board = BoardLink(mock: MockMode.on)
     let feed = VideoFeed()
     let metrics = Metrics()
+    var boardProgress = BoardAgentProgress()
+    var boardProgressFinishedAt = 0.0
     let traces = MockMode.on
         ? TraceStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("demo-traces"))
         : TraceStore()
@@ -38,7 +40,7 @@ import UIKit
     @Published var otherWiFi: String?  // the phone is on this network, not the board's
     /// The character's mood during and right after a run; nil = resting (idle or sleeping, see `mood`).
     @Published var runMood: Mood?
-    @Published var tab = AppTab.agent
+    @Published var tab = AppTab.clicker
     /// Setup page to show (onboarding, or a Home status chip deep link); nil = hidden.
     @Published var setupPage: SetupPage?
     /// The review editor on screen (after a run, a recording, or editing an intent).
@@ -48,8 +50,12 @@ import UIKit
     @Published var recovering: Recovery.Stage?  // the run is paused for a lost link (board, hotspot, mirroring)
     var recoverySince = Date()
     @Published var takingOver = false
-    @Published var departing = false  // the character's take-off before a run
     @Published var startingAgent = false
+    @Published var startupStage = AgentStartupStage.checking
+    @Published var startupFailure: String?
+    @Published var startupCancelled = false
+    var startupSince = Date()
+    var startupTask: Task<Void, Never>?
     /// A banner on Home: the app could not leave by itself (swipe up), or the run waits while the app is in front.
     @Published var homeHint: String?
     var resumeAsked = 0.0  // when Continue was tapped in the app
@@ -140,7 +146,10 @@ import UIKit
         notifier.onAction = { [weak self] action, run in self?.notificationAction(action, run: run) }
         wireRecovery()
 
-        timers.append(Task { [weak self] in await self?.board.commands.keepAwake(screenLive: { self?.feed.live ?? false }) })
+        timers.append(Task { [weak self] in await self?.board.commands.keepAwake(screenLive: {
+            guard let self else { return false }
+            return self.feed.live && !self.agent.running && !self.startingAgent && !self.calibrator.busy && !self.probe.capturing
+        }) })
         timers.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -155,6 +164,7 @@ import UIKit
             MainActor.assumeIsolated { self?.metrics.enteredForeground(); DebugLog.write("app: foreground") }
         }
         if MockMode.on { startMock() }
+        if MockMode.on && ProcessInfo.processInfo.arguments.contains("-agent-startup-fixture") { tab = .agent }
         runs.reload()
         handleLaunchArguments()
         publishWidget()
@@ -162,6 +172,7 @@ import UIKit
 
     /// Every second: metrics; a suspension note; the stream's numbers every 10 s while a run goes.
     private func tick() {
+        if boardProgress.run != 0 { sendBoardProgress() }
         let before = metrics.suspensions, gap = now() - lastTick
         metrics.tick()
         lastTick = now()

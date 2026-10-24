@@ -3,6 +3,7 @@
 #include <esp_heap_caps.h>
 #include "ble_link.h"
 #include "src/video/gop.h"
+#include "src/airplay/airplay.h"
 
 // GOP since the latest IDR; overflow drops it until the next IDR. A still screen gets an IDR only every
 // few minutes, so room for ~27 min of AUs at 5 fps (P-frames of a still screen are tiny).
@@ -28,6 +29,7 @@ static uint8_t chunk[VCHUNK_HDR + MAX_CHUNK];
 static uint32_t winStart, winBytes, winFrames, lastIdr;
 static volatile uint32_t statKbps, statIdrMs, statAt;
 static volatile float statFps;
+static uint32_t lastKeyRequest;
 
 // One access unit as notifies. A failed chunk still consumes its seq, so the app sees a gap.
 static bool sendAu(const uint8_t *p, size_t n, uint8_t flags, uint32_t ts) {
@@ -178,11 +180,24 @@ void video_on_au(const uint8_t *au, size_t len, bool idr) {
   }
   xSemaphoreTake(lock, portMAX_DELAY);
   gop_push(&gop, au, len, idr, now);
+  bool renew = gop.wait_idr || gop.used >= GOP_CAP / 2 || gop.n >= MAX_AUS / 2;
   xSemaphoreGive(lock);
+  // Renew well before the bounded replay arena fills. A request is not success:
+  // only receiving an IDR makes snapshot()/HTTP video ready again.
+  if (renew && now - lastKeyRequest >= 2000 && airplay_request_keyframe()) lastKeyRequest = now;
   xTaskNotifyGive(task);
 }
 
-void video_stream(bool on) { streaming = on; }
+void video_stream(bool on) {
+  streaming = on;
+  if (on) airplay_request_keyframe();
+}
+
+void video_request_keyframe() {
+  // This API only queues the request; the AirPlay event worker performs RTSP I/O.
+  // Keep the cached GOP available until an actual IDR arrives.
+  airplay_request_keyframe();
+}
 
 static void request(const String &id, bool bench, uint32_t kb) {
   Req r = {{0}, kb, bench};
@@ -197,6 +212,125 @@ VideoStats video_stats() {
   bool fresh = millis() - statAt < 3000;  // mirroring stopped: report zeros, not stale numbers
   xSemaphoreTake(lock, portMAX_DELAY);
   uint32_t gopBytes = gop.used;
+  uint32_t latestMs = !gop.wait_idr && gop.n ? gop.aus[gop.n - 1].ts : 0;
   xSemaphoreGive(lock);
-  return {fresh ? statKbps : 0, statIdrMs, gopBytes, fresh ? statFps : 0};
+  return {fresh ? statKbps : 0, statIdrMs, gopBytes, latestMs, fresh ? statFps : 0};
+}
+
+String video_diagnostics() {
+  char json[240];
+  xSemaphoreTake(lock, portMAX_DELAY);
+  snprintf(json, sizeof json,
+           "{\"ready\":%s,\"waiting_idr\":%s,\"generation\":%lu,\"units\":%d,\"bytes\":%u,\"capacity\":%u,\"overflows\":%lu,\"latest_ms\":%lu}",
+           !gop.wait_idr && gop.n && gop.cfg_len ? "true" : "false",
+           gop.wait_idr ? "true" : "false", (unsigned long)gop.gen, gop.n,
+           (unsigned)gop.used, (unsigned)gop.cap, (unsigned long)gop.overflows,
+           (unsigned long)(gop.n ? gop.aus[gop.n - 1].ts : 0));
+  xSemaphoreGive(lock);
+  return json;
+}
+
+esp_err_t video_http_gop(httpd_req_t *request) {
+  // Never hold the producer mutex while serving a slow client. Reserve only the bytes needed,
+  // in PSRAM, then retry if an IDR replaced the GOP while the allocation was being made.
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    uint32_t gen = gop.gen;
+    size_t bytes = gop.used, configBytes = gop.cfg_len;
+    bool available = !gop.wait_idr && gop.n && configBytes;
+    xSemaphoreGive(lock);
+    if (!available) {
+      httpd_resp_set_status(request, "503 Service Unavailable");
+      return httpd_resp_sendstr(request, "No decodable video");
+    }
+    auto *copy = static_cast<uint8_t *>(heap_caps_malloc(configBytes + bytes, MALLOC_CAP_SPIRAM));
+    if (!copy) {
+      httpd_resp_set_status(request, "503 Service Unavailable");
+      return httpd_resp_sendstr(request, "Not enough video snapshot memory");
+    }
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool same = gop.gen == gen && gop.used >= bytes && gop.cfg_len == configBytes && !gop.wait_idr;
+    uint32_t latest = 0;
+    if (same) {
+      memcpy(copy, gop.cfg, configBytes);
+      memcpy(copy + configBytes, gop.arena, bytes);
+      for (int i = 0; i < gop.n && gop.aus[i].off + gop.aus[i].len <= bytes; ++i) latest = gop.aus[i].ts;
+    }
+    xSemaphoreGive(lock);
+    if (!same) { heap_caps_free(copy); continue; }
+    httpd_resp_set_type(request, "video/h264");
+    char up[24], captured[24];
+    snprintf(up, sizeof up, "%lu", static_cast<unsigned long>(millis()));
+    snprintf(captured, sizeof captured, "%lu", static_cast<unsigned long>(latest));
+    httpd_resp_set_hdr(request, "X-Board-Uptime-Ms", up);
+    httpd_resp_set_hdr(request, "X-Video-Captured-Ms", captured);
+    esp_err_t result = httpd_resp_send(request, reinterpret_cast<char *>(copy), configBytes + bytes);
+    heap_caps_free(copy);
+    return result;
+  }
+  httpd_resp_set_status(request, "503 Service Unavailable");
+  return httpd_resp_sendstr(request, "Video changed during capture");
+}
+
+static void put32(uint8_t *p, uint32_t value) {
+  for (int i = 0; i < 4; ++i) p[i] = value >> (8 * i);
+}
+
+esp_err_t video_http_frames(httpd_req_t *request) {
+  char query[100]{}, value[24]{};
+  uint32_t wantedGen = UINT32_MAX, after = 0;
+  size_t budget = 0; // Older clients retain the complete-GOP response.
+  if (httpd_req_get_url_query_str(request, query, sizeof query) == ESP_OK) {
+    if (httpd_query_key_value(query, "generation", value, sizeof value) == ESP_OK) wantedGen = strtoul(value, nullptr, 10);
+    if (httpd_query_key_value(query, "after", value, sizeof value) == ESP_OK) after = strtoul(value, nullptr, 10);
+    if (httpd_query_key_value(query, "max_bytes", value, sizeof value) == ESP_OK)
+      budget = std::max<size_t>(16384, std::min<size_t>(strtoul(value, nullptr, 10), 512 * 1024));
+  }
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    uint32_t gen = gop.gen;
+    int count = gop.n;
+    bool available = !gop.wait_idr && count && gop.cfg_len;
+    bool restart = wantedGen != gen || after > static_cast<uint32_t>(count);
+    int first = restart ? 0 : static_cast<int>(after);
+    size_t start = first < count ? gop.aus[first].off : gop.used;
+    uint32_t latest = count ? gop.aus[count - 1].ts : 0;
+    count = gop_window_end(&gop, first, budget);
+    size_t end = count > first ? gop.aus[count - 1].off + gop.aus[count - 1].len : start;
+    size_t config = restart ? gop.cfg_len : 0;
+    size_t size = 16 + (count - first + (restart ? 1 : 0)) * 9 + config + end - start;
+    uint32_t up = millis();
+    xSemaphoreGive(lock);
+    if (!available) break;
+    auto *copy = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM));
+    if (!copy) break;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool same = gop.gen == gen && !gop.wait_idr && gop.n >= count && (!restart || gop.cfg_len == config);
+    if (same) {
+      memcpy(copy, "S3VF", 4); put32(copy + 4, gen); put32(copy + 8, count);
+      put32(copy + 12, count - first + (restart ? 1 : 0));
+      size_t pos = 16;
+      auto append = [&](const uint8_t *bytes, size_t len, uint32_t ts, uint8_t flags) {
+        put32(copy + pos, ts); put32(copy + pos + 4, len); copy[pos + 8] = flags;
+        memcpy(copy + pos + 9, bytes, len); pos += 9 + len;
+      };
+      if (restart) append(gop.cfg, config, gop.cfg_ts, VF_CONFIG);
+      for (int i = first; i < count; ++i) {
+        const auto &au = gop.aus[i];
+        append(gop.arena + au.off, au.len, au.ts, au.idr ? VF_IDR : 0);
+      }
+    }
+    xSemaphoreGive(lock);
+    if (!same) { heap_caps_free(copy); continue; }
+    httpd_resp_set_type(request, "application/octet-stream");
+    char uptime[24], captured[24];
+    snprintf(uptime, sizeof uptime, "%lu", static_cast<unsigned long>(up));
+    snprintf(captured, sizeof captured, "%lu", static_cast<unsigned long>(latest));
+    httpd_resp_set_hdr(request, "X-Board-Uptime-Ms", uptime);
+    httpd_resp_set_hdr(request, "X-Video-Captured-Ms", captured);
+    esp_err_t result = httpd_resp_send(request, reinterpret_cast<char *>(copy), size);
+    heap_caps_free(copy); return result;
+  }
+  httpd_resp_set_status(request, "503 Service Unavailable");
+  return httpd_resp_sendstr(request, "Video unavailable; reconnect mirroring");
 }

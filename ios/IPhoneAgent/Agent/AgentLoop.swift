@@ -13,6 +13,7 @@ struct BlindError: LocalizedError {
     func swipe(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, hold: Bool) async throws
     func drag(_ points: [CGPoint], hold: Bool) async throws
     func type(_ text: String) async throws
+    func search(_ text: String) async throws
     func key(_ combo: String) async throws
     func goHome() async throws
     func goBack() async throws
@@ -20,6 +21,10 @@ struct BlindError: LocalizedError {
 }
 
 extension Pointer: Gestures {}
+
+extension Gestures {
+    func search(_ text: String, pasted: Bool) async throws { try await search(text) }
+}
 
 /// See-think-act loop: a planner model writes the plan, an actor model picks each step. Port of agent.py.
 @MainActor final class AgentLoop: ObservableObject {
@@ -40,6 +45,7 @@ extension Pointer: Gestures {}
     @Published var steps: [JObject] = []
     @Published private(set) var shots: [Int: Data] = [:]  // step index -> screenshot the model decided on
     @Published private(set) var running = false
+    private(set) var round = 0
     private var pointerAt = CGPoint.zero  // last pointer position (screen fractions)
     /// When the last gesture ended: the model never decides on a frame from before it.
     private(set) var lastActed = 0.0
@@ -80,6 +86,7 @@ extension Pointer: Gestures {}
         pointerAt = .zero
         lastActed = 0
         helpAsked = 0
+        round = 0
         if !traceStarted { trace?.start(task: task) }
         running = true
         job = Task { [weak self] in
@@ -248,6 +255,7 @@ extension Pointer: Gestures {}
 
     /// One see-think-act round (one or more actions). Returns true when the task is over.
     func step() async throws -> Bool {
+        round += 1
         var timing = Metrics.Step()
         let acts = try await nextActions()
         timing.llmMs = (acts[0].act["think_s"]?.double ?? 0) * 1000
@@ -278,24 +286,25 @@ extension Pointer: Gestures {}
             record(planned.shot, act)
             if name == "done" || name == "fail" { return true }
             let following = i < acts.count - 1 ? acts[i + 1].act["action"]?.str : nil
-            if name == "tap" && (following == "type" || following == "key") {  // a missed tap never opened the field
-                timing.frameMs += await settle()
+            let focusesInput = name == "tap" || (name == "key" && act["combo"]?.str == "cmd+space")
+            if focusesInput && (following == "type" || following == "key") {
+                timing.frameMs += try await settle()
                 if !Vision.changed(seen, screen?.frame, ignore: spots) {
                     steps[steps.count - 1]["changed"] = .bool(false)
                     return false  // skip the rest; the actor looks again
                 }
             }
         }
-        timing.frameMs += await settle()
+        timing.frameMs += try await settle()
         // feedback for the next round
         steps[steps.count - 1]["changed"] = .bool(Vision.changed(seen, screen?.frame, ignore: spots))
         return false
     }
 
-    private func settle() async -> Double {
+    private func settle() async throws -> Double {
         let started = now()
         onDoing?(.looking)
-        await screen?.afterAction(since: lastActed)
+        try await screen?.afterAction(since: lastActed)
         return (now() - started) * 1000
     }
 
@@ -328,7 +337,7 @@ extension Pointer: Gestures {}
     func nextActions() async throws -> [Planned] {
         guard let actor else { throw LLMError(message: "no actor model") }
         // actions and their effect only: echoing earlier thoughts makes the model repeat them instead of looking
-        let hidden: Set<String> = ["t", "plan", "plan_zh", "think_s", "act_s", "shot", "thought", "thought_zh", "changed"]
+        let hidden: Set<String> = ["t", "plan", "plan_zh", "think_s", "act_s", "shot", "thought", "thought_zh", "status_zh", "changed"]
         let history = steps.suffix(8).filter { $0["plan"] == nil }.map { s -> String in
             let effect = s["changed"] == .bool(true) ? " -> screen changed"
                 : s["changed"] == .bool(false) ? " -> screen did NOT change" : ""
@@ -361,6 +370,7 @@ extension Pointer: Gestures {}
         case "path": try await phone.drag(points(a).map { CGPoint(x: $0.x / 1000, y: $0.y / 1000) }, hold: true)
         case "circle": try await phone.drag(circle(p("x"), p("y"), p("r"), aspect: screen?.aspect ?? 9 / 19.5), hold: true)
         case "type": try await phone.type(a["text"]?.str ?? "")
+        case "search": try await phone.search(a["text"]?.str ?? "")
         case "key": try await phone.key(a["combo"]?.str ?? "")
         case "home": try await phone.goHome()
         case "back": try await phone.goBack()

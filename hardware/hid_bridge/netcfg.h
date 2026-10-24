@@ -4,7 +4,7 @@
 #pragma once
 #include <Arduino.h>
 
-void net_begin();
+void net_begin(bool offline = false);
 void net_poll();                         // call from loop(): applies a pending `net` write
 String net_json();                       // value of the `net` characteristic
 void net_request(const String &json);    // `net` write; applied by net_poll()
@@ -14,6 +14,10 @@ int net_peers();                         // stations on our SoftAP, or 1 when co
 bool net_up();                           // has an IP address
 bool net_coex(const String &pref);       // Wi-Fi/BLE radio share: "bt" | "balance" (boot default) | "wifi"
 const char *net_coex_mode();
+String net_status_json();
+String net_configure(const String& json);
+String net_ap_ssid();
+String net_ap_password();
 
 // AirPlay settings (take effect on the next boot of the receiver)
 uint16_t cfg_width();

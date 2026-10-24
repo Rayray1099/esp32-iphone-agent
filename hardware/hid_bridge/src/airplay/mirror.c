@@ -207,5 +207,8 @@ void ap_mirror_stop(void) {
 bool ap_mirror_running(void) { return m.run; }
 
 bool ap_mirror_streaming(void) {
-  return m.run && m.last_data_us && esp_timer_get_time() - m.last_data_us < 3000000;
+  // iOS may send no packets while its screen is unchanged. The data socket,
+  // not an inactivity timer, owns the session; the app verifies frame freshness
+  // separately before acting. A closed socket or RTSP teardown ends it.
+  return m.run && m.sfd >= 0 && m.last_data_us != 0;
 }

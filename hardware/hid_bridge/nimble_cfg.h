@@ -11,6 +11,8 @@
 // at ~300 kbps; 64 x 320 lets ~20 MTU-sized notifies wait in the host. ~22 KB internal RAM.
 #undef CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT
 #define CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT 64
+// NimBLE-Arduino 2.5.1 reads this legacy spelling when the IDF host is disabled.
+#define CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT 64
 #undef CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE
 #define CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE 320
 // msys_2 (sdkconfig: 24 x 320) only serves requests larger than an msys_1 block; with 320-byte

@@ -20,6 +20,10 @@ Full UUID = `6e400001-a9e8-4b1b-9c39-6d6f8a3c` + 4-hex suffix, e.g. cmd = `6e400
 `<id>` is a decimal request id chosen by the app; the reply echoes it.
 Existing HID commands, unchanged semantics from the old TCP protocol:
 `ping`, `home`, `move DX DY`, `press`, `release`, `click`, `scroll A B`, `type TEXT`, `key COMBO`.
+`type` and `key` press modifiers in their own report before the key and release them after it, like a
+physical keyboard: iOS Spotlight otherwise keeps the modifier latched for later letters. `key eisu`
+sends the JIS 英数 key (HID LANG2), which selects the English (Latin) input source; the app sends it
+before every `type`.
 New:
 - `stream on|off` — continuously forward every access unit over `video` (default off).
 - `snap` — send SPS/PPS + every AU since the last IDR (the current GOP), then reply `ok`.

@@ -36,6 +36,9 @@ void gop_init(gop_buf *g, uint8_t *arena, size_t cap, gop_au *aus, int max);
 void gop_set_config(gop_buf *g, const uint8_t *annexb, size_t len, uint32_t ts);
 // Appends one Annex-B access unit. Returns its index, or -1 if it was dropped.
 int gop_push(gop_buf *g, const uint8_t *annexb, size_t len, bool idr, uint32_t ts);
+// Exclusive end of a bounded contiguous batch. Never split or skip an AU; a
+// single AU larger than the budget still makes progress. Zero means unlimited.
+int gop_window_end(const gop_buf *g, int first, size_t budget);
 // True if the Annex-B data contains an IDR slice (NAL type 5).
 bool annexb_has_idr(const uint8_t *p, size_t len);
 // Rewrites AVCC (4-byte big-endian length prefixes) in place into Annex-B start codes.

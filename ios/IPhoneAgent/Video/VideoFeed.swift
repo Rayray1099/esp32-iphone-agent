@@ -9,7 +9,7 @@ import UIKit
     var capturedAt: Double { get }
     var aspect: Double { get }
     /// After a gesture that ended at `since`: wait until the screen shows its result (and fetch it, in snap mode).
-    func afterAction(since: Double) async
+    func afterAction(since: Double) async throws
 }
 
 /// How a run gets its frames: the live stream (`stream on`, the default: a frame in under a second), or one
@@ -31,9 +31,14 @@ extension ScreenSource {
     /// Wait until the screen stops changing (AirPlay only sends frames on change). Mid-animation frames are big and
     /// can reach us late over BLE, so a gap is only "quiet" once it also covers the last frame's transport lag.
     func settled(quiet: Double = 0.5, least: Double = 0.3, most: Double = 4) async {
+        if let feed = self as? VideoFeed, feed.transport == "Wi-Fi" {
+            await feed.settledLocally(quiet: quiet, least: least, most: most)
+            return
+        }
         let started = now()
         try? await Task.sleep(nanoseconds: UInt64(least * 1e9))
         while now() - updated < quiet + lag && now() - started < most {
+            if Task.isCancelled { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
@@ -45,7 +50,7 @@ extension ScreenSource {
     func fresh(since: Double, timeout: Double = 0.8) async -> Data? {
         let deadline = now() + timeout
         while (capturedAt > 0 ? capturedAt : updated) <= since {
-            if now() > deadline { return nil }
+            if Task.isCancelled || now() > deadline { return nil }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return frame
@@ -69,6 +74,28 @@ extension ScreenSource {
 
     private var assembler = VideoAssembler()
     private let decoder = H264Decoder()
+    private var localTask: Task<Void, Never>?
+    private var localGeneration: UInt32?
+    private var localNext: UInt32 = 0
+    private var localLatestMs: UInt32 = 0
+    private var localVerifiedAt = 0.0
+    private var decodedBoardMs: UInt32 = 0
+    private var localActive = false
+    private var localSourceFailure: LocalVideoResponseError?
+    private var streamRevision = 0
+    private var stability = FrameStability()
+    private(set) var transport = "BLE"
+    private lazy var localSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.allowsCellularAccess = false
+        // A VPN or metered Wi-Fi can be marked expensive. Cellular is prohibited
+        // separately; rejecting expensive paths can also reject the local LAN.
+        // A large IDR may exceed one small batch on a busy ESP32 radio.
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 20
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration, delegate: LocalVideoRedirectPolicy(), delegateQueue: nil)
+    }()
 
     init() {
         decoder.onFrame = { [weak self] f in DispatchQueue.main.async { self?.publish(f) } }
@@ -82,13 +109,14 @@ extension ScreenSource {
         }
     }
 
-    var live: Bool { mirroring && frame != nil && (device?.connected ?? false) }
+    var live: Bool { mirroring && !broken && frame != nil && (device?.connected ?? false) }
 
     /// Frame width / height (portrait iPhone as a fallback).
     var aspect: Double { size.width > 0 && size.height > 0 ? size.width / size.height : 9 / 19.5 }
 
     /// One `video` notify from BoardLink.
     func receive(_ chunk: Data) {
+        guard !localActive else { return }
         metrics?.videoBytes(chunk.count)
         let dropsBefore = assembler.drops
         let unit = assembler.add(chunk)
@@ -100,7 +128,15 @@ extension ScreenSource {
     }
 
     /// The link (re)connected: chunk numbering starts over.
-    func resetStream() { assembler.reset(); clockOffset = nil }  // the board may have rebooted: its clock too
+    func resetStream() {
+        streamRevision += 1
+        localTask?.cancel(); localTask = nil; localActive = false
+        localGeneration = nil; localNext = 0; localVerifiedAt = 0; decodedBoardMs = 0; localSourceFailure = nil
+        decoder.queue.async { [decoder] in decoder.reset() }
+        assembler.reset(); clockOffset = nil
+        frame = nil; capturedAt = 0; updated = 0; broken = true
+        stability = FrameStability()
+    }
 
     /// A board timestamp (status `up`, or a streamed unit) just arrived: keep the smallest offset.
     func boardClock(ms: Int) {
@@ -115,9 +151,17 @@ extension ScreenSource {
     }
 
     private func publish(_ f: H264Decoder.Frame) {
+        let capture = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? now()
+        guard capture >= capturedAt else { return }  // a replay must never move the screen backwards
         frame = f.jpeg
+        if localActive, let image = Vision.image(f.jpeg) {
+            // Exclude status-bar/Live Activity animation. About 4 KiB per frame.
+            let sample = Vision.gray(image, 48, 96)
+            stability.observe(Array(sample.px.dropFirst(48 * 6)), at: now())
+        }
         updated = now()
-        capturedAt = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? updated
+        capturedAt = capture
+        decodedBoardMs = f.unit.boardMs
         broken = false
         if size.width != CGFloat(f.width) || size.height != CGFloat(f.height) {
             size = CGSize(width: f.width, height: f.height)
@@ -127,6 +171,17 @@ extension ScreenSource {
 
     /// The app asked the board to forward the stream (`stream on`).
     private(set) var streamOn = false
+
+    func settledLocally(quiet: Double, least: Double, most: Double) async {
+        let began = now()
+        while now() - began < most {
+            if Task.isCancelled { return }
+            if now() - began >= least, !broken,
+               stability.quiet(at: now(), for: quiet), localVerifiedAt > now() - 2,
+               decodedBoardMs == localLatestMs { return }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+    }
 
     /// Seconds a snap may take: the buffered GOP over the measured BLE rate, doubled, at least 8 s.
     var snapTimeout: Double {
@@ -140,9 +195,24 @@ extension ScreenSource {
     /// once with a longer timeout. Returns where the frame came from, for the log.
     @discardableResult
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
+        if localActive {
+            let deadline = now() + max(wait, 30)
+            while localActive && now() < deadline {
+                try Task.checkCancellation()
+                if let localSourceFailure { throw localSourceFailure }
+                // AirPlay sends nothing for an unchanged screen. A recent board watermark
+                // proves that our decoded frame is still the newest captured image.
+                if !broken, frame != nil, localVerifiedAt > now() - 2,
+                   decodedBoardMs == localLatestMs { return "local Wi-Fi (verified latest)" }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if localActive {
+                throw BlindError(reason: "區域網路鏡像未追上最新畫面，已停止以避免誤觸。")
+            }
+        }
         if streamOn && mirroring {
-            if frame != nil && now() - updated < maxAge { return "live" }
-            if await fresh(since: now() - maxAge, timeout: wait) != nil { return "live (waited)" }
+            if !broken && frame != nil && now() - capturedAt < maxAge { return "live" }
+            if await fresh(since: now() - maxAge, timeout: wait) != nil && !broken { return "live (waited)" }
         }
         do {
             try await snap()
@@ -150,12 +220,20 @@ extension ScreenSource {
             DebugLog.write("snap timed out; retrying once with a longer timeout")
             try await snap(timeout: snapTimeout * 1.5)
         }
+        guard !broken, frame != nil, now() - capturedAt < maxAge + wait else {
+            throw BlindError(reason: "螢幕畫面已過期，請重新連接螢幕鏡像輸出後再執行。")
+        }
         return "snap"
     }
 
     /// Ask the board for the current GOP and wait until it is decoded. Returns the latency in ms.
     @discardableResult
     func snap(timeout: Double? = nil) async throws -> Double {
+        if localActive {
+            let began = now()
+            _ = try await currentFrame(wait: timeout ?? 10)
+            return (now() - began) * 1000
+        }
         guard let device else { throw DeviceError(message: "board not connected") }
         let started = now()
         if let channel = device as? CommandChannel {
@@ -171,16 +249,123 @@ extension ScreenSource {
     }
 
     func stream(_ on: Bool) async throws {
+        streamRevision += 1
+        let revision = streamRevision
+        localTask?.cancel(); localTask = nil; localActive = false
+        localSourceFailure = nil
+        if on, let channel = device as? CommandChannel,
+           let response = try? await channel.send("video-auth", timeout: 5),
+           let credentials = try? JSONDecoder().decode(LocalVideoCredentials.self, from: Data(response.utf8)),
+           credentials.isLocal {
+            if on { try Task.checkCancellation() }
+            try await device?.send("stream off")
+            localGeneration = nil; localNext = 0; localVerifiedAt = 0
+            localActive = true; transport = "Wi-Fi"; streamOn = true
+            localTask = Task { [weak self] in await self?.readLocalVideo(credentials, revision: revision) }
+            DebugLog.write("video: local Wi-Fi enabled; cellular disabled for video requests")
+            return
+        }
+        transport = "BLE"
         try await device?.send("stream \(on ? "on" : "off")")
         streamOn = on
+    }
+
+    private func readLocalVideo(_ credentials: LocalVideoCredentials, revision: Int) async {
+        var failures = 0
+        var unavailableSince: Double?
+        while !Task.isCancelled && localActive && revision == streamRevision {
+            do {
+                var components = URLComponents(url: credentials.url.appendingPathComponent("api/v1/video/frames"), resolvingAgainstBaseURL: false)!
+                components.queryItems = [URLQueryItem(name: "generation", value: String(localGeneration ?? UInt32.max)),
+                                         URLQueryItem(name: "after", value: String(localNext)),
+                                         URLQueryItem(name: "max_bytes", value: "131072")]
+                var request = URLRequest(url: components.url!)
+                request.allowsCellularAccess = false
+                request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
+                let (data, response) = try await localSession.data(for: request)
+                try Task.checkCancellation()
+                guard revision == streamRevision else { return }
+                guard let response = response as? HTTPURLResponse else { throw DeviceError(message: "Invalid video response") }
+                try LocalVideoResponseError.validate(status: response.statusCode)
+                guard let up = response.value(forHTTPHeaderField: "X-Board-Uptime-Ms").flatMap(Int.init),
+                      let latest = response.value(forHTTPHeaderField: "X-Video-Captured-Ms").flatMap(UInt32.init)
+                else { throw DeviceError(message: "Local video is not ready") }
+                let batch = try LocalVideoBatch(data)
+                localSourceFailure = nil; unavailableSince = nil
+                boardClock(ms: up)
+                if localGeneration != batch.generation {
+                    frame = nil; capturedAt = 0; decodedBoardMs = 0; broken = true
+                    stability = FrameStability()
+                }
+                localGeneration = batch.generation; localNext = batch.next
+                localLatestMs = latest; localVerifiedAt = now()
+                let units = batch.units
+                await withCheckedContinuation { continuation in
+                    decoder.queue.async { [decoder] in
+                        for (index, unit) in units.enumerated() {
+                            decoder.decode(unit, emit: index == units.count - 1)
+                        }
+                        continuation.resume()
+                    }
+                }
+                failures = 0
+                // Drain catch-up batches immediately. Once caught up, poll at
+                // 5 Hz; the board watermark still gates every model decision.
+                if units.isEmpty || units.last?.boardMs == latest {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
+            } catch is CancellationError { return }
+            catch LocalVideoResponseError.sourceUnavailable {
+                guard !Task.isCancelled, revision == streamRevision else { return }
+                broken = true; localVerifiedAt = 0
+                note = LocalVideoResponseError.sourceUnavailable.localizedDescription
+                if unavailableSince == nil { unavailableSince = now(); DebugLog.write("video: source unavailable (HTTP 503); awaiting IDR") }
+                // Allow a short IDR gap; BLE would replay the same missing source GOP.
+                if now() - (unavailableSince ?? now()) >= 5 { localSourceFailure = .sourceUnavailable; return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            catch {
+                if Task.isCancelled || revision != streamRevision { return }
+                failures += 1
+                let issue = error as NSError
+                note = "local video: \(issue.domain) \(issue.code): \(issue.localizedDescription)"
+                DebugLog.write(note)
+                if failures >= 2 {
+                    localActive = false; transport = "BLE"; assembler.reset()
+                    decoder.queue.async { [decoder] in decoder.reset() }
+                    DebugLog.write("video: local Wi-Fi unavailable; switching to BLE")
+                    try? await device?.send("stream on")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
     }
 
     /// The model must never see a frame from before the action that ended at `since`. Stream: let the screen
     /// settle, then wait (bounded) for a frame captured after the action; none while the stream is healthy means
     /// the screen did not change, but a broken stream (waiting for an IDR) needs a snap. Snap: give the UI a moment,
     /// snap, and snap once more if the GOP still ends before the action.
-    func afterAction(since: Double) async {
+    func afterAction(since: Double) async throws {
         do {
+            if localActive {
+                // Check freshness first; unchanged/animated transports no longer
+                // force two consecutive generic four-second settle windows.
+                if !(await newer(than: since, timeout: 1.2)) || broken {
+                    try Task.checkCancellation()
+                    let probeAt = now()
+                    try await device?.send("move 1 0")
+                    try await device?.send("move -1 0")
+                    guard await newer(than: probeAt, timeout: 4), !broken else {
+                        throw BlindError(reason: "ESP32 未傳回操作後的新畫面，已停止以避免誤觸。")
+                    }
+                }
+                await settledLocally(quiet: 0.4, least: 0.25, most: 4)
+                try Task.checkCancellation()
+                _ = try await currentFrame(wait: 2)
+                guard capturedAt >= since else { throw BlindError() }
+                return
+            }
             if FrameMode.current == .snap {
                 try await Task.sleep(nanoseconds: 700_000_000)
                 try await currentFrame()
@@ -190,15 +375,24 @@ extension ScreenSource {
                 try await currentFrame()
             } else {
                 await settled()
-                if await newer(than: since, timeout: 1.5) { return }
-                guard broken || !streamOn else { return DebugLog.write("frame: none after the action; screen unchanged") }
-                DebugLog.write("frame: stream stale (waiting for an IDR); snapping")
+                if await newer(than: since, timeout: 2) && !broken { return }
+                // A tiny out-and-back pointer probe forces a screen update even when a tap changed
+                // nothing. A decoded frame from after it proves the entire capture path still works.
+                try Task.checkCancellation()
+                let probeAt = now()
+                try await device?.send("move 1 0")
+                try await device?.send("move -1 0")
+                if await newer(than: probeAt, timeout: 4) && !broken { return }
+                DebugLog.write("frame: no capture after the action/probe; requesting current GOP")
                 try await snap()
             }
-        } catch {
+        } catch is CancellationError { throw CancellationError() }
+        catch {
             DebugLog.write("frame after action failed: \(error.localizedDescription)")
         }
-        if capturedAt < since { DebugLog.write(String(format: "frame: still %.1f s older than the action", since - capturedAt)) }
+        guard !broken, capturedAt >= since else {
+            throw BlindError(reason: "ESP32 未傳回操作後的新畫面，已停止以避免誤觸。請重新連接螢幕鏡像輸出。")
+        }
     }
 
     /// Waits until the shown frame was captured after `t`; false on timeout.
@@ -206,11 +400,16 @@ extension ScreenSource {
         let deadline = now() + timeout
         while capturedAt < t {
             if now() > deadline { return false }
+            if Task.isCancelled { return false }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         return true
     }
 
     /// The link dropped: the board forgets `stream on`.
-    func linkLost() { streamOn = false }
+    func linkLost() {
+        streamRevision += 1
+        localTask?.cancel(); localTask = nil; localActive = false
+        streamOn = false
+    }
 }

@@ -27,7 +27,7 @@ import XCTest
         XCTAssertEqual(run.outcome, .done)
         XCTAssertNotNil(run.steps[0].frame)
         XCTAssertNotNil(run.duration)
-        XCTAssertEqual(StepText.title(run.steps[0].action), "Tap at 500, 300")
+        XCTAssertEqual(StepText.title(run.steps[0].action), String(localized: "Tap at \(500), \(300)"))
         try? FileManager.default.removeItem(at: root)
     }
 

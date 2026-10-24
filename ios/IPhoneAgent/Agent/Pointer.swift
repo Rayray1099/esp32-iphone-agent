@@ -2,21 +2,21 @@ import Foundation
 
 /// Touch-like gestures on the phone, built from relative mouse moves. Port of phone.py.
 ///
-/// The pointer is relative, so the app tracks where it is (in mouse units) and moves from there; every few
-/// gestures it slams it into the top-left corner (`home`) again to cancel drift. Coordinates are fractions of
-/// the screen (0..1, origin top-left), so they work for any frame size.
+/// Touch calibration measures moves from the top-left corner (`home`), so each new gesture uses that
+/// same path to avoid accumulated relative-motion drift. A repeated target can reuse its known position;
+/// drags stay continuous. Coordinates are fractions of the screen (0..1, origin top-left).
 @MainActor final class Pointer: ObservableObject {
     static let calibrationMove = 200        // mouse units moved diagonally for a manual (one point) calibration
     static let calibrationStops = [150, 350]  // automatic calibration finds the pointer at these distances
-    static let rehomeEvery = 10             // gestures between re-homing
+    static let rehomeEvery = 1              // distinct gestures between re-homing
     static let hold = 0.25                  // s to rest before lifting, so iOS adds no momentum
     static let tapGap = 0.15                // s to stay still after a click, so iOS sees a finished tap
     static let nudge = 12                   // mouse units the pointer is wiggled by to find it on screen
-    static let aimTolerance = 0.008         // screen fraction; a bigger miss is corrected before pressing
+    static let aimTolerance = 0.003         // about three points vertically on an iPhone
     static let maxMiss = 0.06               // bigger misses are still corrected, but not learned from
 
     struct Span: Codable, Equatable { var w: Int, h: Int }
-    private struct Saved: Codable { var w: Int, h: Int, seen: [String: [[Double]]]?, quality: Double?, aspect: Double? }
+    private struct Saved: Codable { var w: Int, h: Int, seen: [String: [[Double]]]?, quality: Double?, aspect: Double?; var movementVersion: Int? }
 
     let device: HIDDevice
     weak var screen: ScreenSource?
@@ -35,12 +35,15 @@ import Foundation
     var screenAspect: () -> Double = { 9 / 19.5 }
     /// Last-resort pointer finder on a frame (the vision model), when the pixel diff finds nothing.
     var locate: ((Data) async -> CGPoint?)?
+    /// Where non-ASCII text goes before Cmd+V.
+    var clipboard: Clipboard = SystemClipboard()
 
     init(device: HIDDevice, calibrationFile: URL, screen: ScreenSource? = nil) {
         self.device = device
         self.file = calibrationFile
         self.screen = screen
-        if let data = try? Data(contentsOf: calibrationFile), let saved = try? JSONDecoder().decode(Saved.self, from: data) {
+        if let data = try? Data(contentsOf: calibrationFile), let saved = try? JSONDecoder().decode(Saved.self, from: data),
+           saved.movementVersion == 2 {
             span = Span(w: saved.w, h: saved.h)
             (quality, aspect) = (saved.quality, saved.aspect)
             for axis in ["x", "y"] {
@@ -148,32 +151,39 @@ import Foundation
     private func save() {
         guard let span else { return }
         let saved = Saved(w: span.w, h: span.h, seen: seen.mapValues { $0.map { [$0.0, $0.1] } }, quality: quality,
-                          aspect: aspect)
+                          aspect: aspect, movementVersion: 2)
         try? JSONEncoder().encode(saved).write(to: file)
     }
 
     func point(_ x: Double, _ y: Double, aim: Bool = false) async throws {
         guard calibrated else { throw DeviceError(message: "pointer not calibrated") }
         try await moveTo(dx(x), dy(y))
-        if aim && screen != nil { try await self.aim(x, y) }
+        if aim {
+            guard screen?.live == true else { throw BlindError(reason: "精準點擊需要即時鏡像畫面，未送出點擊。") }
+            try await self.aim(x, y)
+        }
     }
 
-    /// Closed loop: find the real pointer on screen, fix a miss, and learn the error for later moves.
+    /// Video checks never change the touch calibration: iOS can reshape/snap its visible pointer on a
+    /// control, so its visual centre is not a trustworthy sample of the touch landing.
     private func aim(_ x: Double, _ y: Double) async throws {
-        guard let span, let found = try await measure(x, y, model: false) else {
-            log(String(format: "aim (%.3f, %.3f): pointer not found", x, y))
-            return
+        guard let span else { return }
+        for attempt in 0...2 {
+            guard let found = try await measure(x, y, model: false) else {
+                throw DeviceError(message: "無法確認指標位置，未送出點擊。請重新校正或選擇較清楚的目標。")
+            }
+            let fx = Double(found.x), fy = Double(found.y)
+            log(String(format: "aim check %d: target (%.3f, %.3f), observed (%.3f, %.3f)", attempt, x, y, fx, fy))
+            if abs(fx - x) <= Self.aimTolerance && abs(fy - y) <= Self.aimTolerance { return }
+            guard attempt < 2, max(abs(fx - x), abs(fy - y)) <= Self.maxMiss else {
+                throw DeviceError(message: "指標偏移超過精準點擊範圍，未送出點擊。請重新校正。")
+            }
+            let mx = Int(((x - fx) * Double(span.w)).rounded()), my = Int(((y - fy) * Double(span.h)).rounded())
+            let old = pos
+            pos = nil
+            try await device.send("move \(mx) \(my)")
+            if let p = old { pos = (p.0 + mx, p.1 + my) }
         }
-        let fx = Double(found.x), fy = Double(found.y)
-        if max(abs(fx - x), abs(fy - y)) <= Self.maxMiss {  // learn from normal drift only, never a stray reading
-            remember("x", (fix(x, "x"), fx))
-            remember("y", (fix(y, "y"), fy))
-            save()
-        }
-        if abs(fx - x) <= Self.aimTolerance && abs(fy - y) <= Self.aimTolerance { return }
-        let mx = Int(((x - fx) * Double(span.w)).rounded(.toNearestOrEven)), my = Int(((y - fy) * Double(span.h)).rounded(.toNearestOrEven))
-        try await device.send("move \(mx) \(my)")  // fix this miss right away
-        if let p = pos { pos = (p.0 + mx, p.1 + my) }
     }
 
     /// Wiggle the pointer and find it on screen, near the target first, then anywhere. model: ask the vision
@@ -182,14 +192,18 @@ import Foundation
         guard let screen, let span else { return nil }
         let nudge = x < 0.9 ? Self.nudge : -Self.nudge  // stay clear of the screen edge
         await screen.settled(quiet: 0.15, least: 0.1, most: 0.6)  // pointer at rest
-        let before = screen.frame, sent = now()
+        let before = screen.frame
+        let sent = now()
         try await device.send("move \(nudge) 0")
-        var after = await screen.fresh(since: sent, timeout: 1.2)
+        var after = await screen.fresh(since: sent, timeout: 2)
         if after != nil {
             await screen.settled(quiet: 0.1, least: 0.05, most: 0.4)
             after = screen.frame
         }
+        let returned = now()
         try await device.send("move \(-nudge) 0")
+        guard await screen.fresh(since: returned, timeout: 2) != nil else { return nil }
+        await screen.settled(quiet: 0.1, least: 0.05, most: 0.4)
         let shift = Double(nudge) / Double(span.w)
         guard let before, let after else { return nil }
         if let p = Vision.pointer(before, after, near: CGPoint(x: x, y: y), shift: shift)
@@ -239,7 +253,11 @@ import Foundation
             try await device.send("release")
             (pos, link) = (nil, device.links)
         }
+        // Repeated taps need no motion. A drag endpoint is not a from-home landing (moves > 1),
+        // so even the same target must be re-anchored after a stroke.
+        if rehome, moves <= 1, let p = pos, p.0 == tx, p.1 == ty { return }
         if pos == nil || (rehome && moves >= Self.rehomeEvery) {
+            pos = nil  // a failed/partial home also invalidates the previous landing
             try await device.send("home")
             (pos, moves) = ((0, 0), 0)
         }
@@ -290,17 +308,43 @@ import Foundation
         try await device.send("scroll \(lines) 0")
     }
 
-    func type(_ text: String) async throws { try await device.send("type \(text)") }
+    /// ASCII is typed in the English source; anything else is pasted (PasteInput).
+    func type(_ text: String) async throws {
+        guard screen?.live == true else { throw BlindError() }
+        if PasteInput.needed(text) { return try await PasteInput.paste(text, clipboard: clipboard, device: device, log: log) }
+        try await EnglishInput.ensure(device: device, log: log)
+        try await device.send("type \(text)")
+    }
+
+    /// One locally verified keyboard operation, with no model calls or mouse aiming.
+    /// It only enters the query; the actor must inspect results before opening any app.
+    func search(_ text: String) async throws { try await search(text, pasted: false) }
+
+    /// pasteboard: when true, the caller already put text on the clipboard (it did so while still foreground).
+    func search(_ text: String, pasted preput: Bool) async throws {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !text.contains(where: \.isNewline) else {
+            throw DeviceError(message: "Spotlight 搜尋需要單行非空白查詢。")
+        }
+        guard let screen, screen.live else { throw BlindError() }
+        let paste = PasteInput.needed(text)
+        if paste, !preput { guard clipboard.put(text) else { throw DeviceError(message: "無法寫入剪貼簿，未輸入文字。") } }
+        let sent = now()
+        try await device.send("key cmd+space")
+        try await screen.afterAction(since: sent)
+        if !paste { try await EnglishInput.ensure(device: device, log: log) }
+        try await device.send("key cmd+a")
+        try await device.send("key backspace")
+        if paste { try await device.send("key cmd+v"); log("keyboard: pasted \(text.count) characters"); return }
+        try await device.send("type \(text)")
+    }
     func key(_ combo: String) async throws { try await device.send("key \(combo)") }
-    /// The board's consumer-control Home key ("AC Home"), which iOS treats like a keyboard's home key. Boards
-    /// without it (older firmware) answer an error: then Cmd+H and the flick up from the home bar (a flick, not
-    /// a rest: resting opens the app switcher).
+    /// Map mouse button 4 to Home in iOS AssistiveTouch > Devices. Unlike consumer Home and Cmd-H,
+    /// this is handled by AssistiveTouch on hosts that ignore keyboard system shortcuts.
     func goHome() async throws {
-        if (try? await device.send("homescreen")) != nil { return }
-        try await key("cmd+h")
-        try await Task.sleep(nanoseconds: 350_000_000)
-        try await swipe(0.5, 0.995, 0.5, 0.45, hold: false)
-        pos = nil  // starting at the screen's edge may have clamped the pointer: re-home before the next move
+        if (try? await device.send("button 4")) != nil { pos = nil; return }
+        _ = try? await device.send("homescreen")
+        _ = try? await key("cmd+h")
+        pos = nil
     }
     func goBack() async throws {
         try await swipe(0.005, 0.45, 0.6, 0.45, hold: false)

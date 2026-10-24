@@ -38,6 +38,7 @@ public:
 };
 BridgeMouse mouse;
 static uint8_t bluetoothButtons = 0;
+static bool sourceKeyHeld = false;
 template <typename Send> bool bluetoothSend(Send send) {
   uint32_t began = millis();
   do {
@@ -52,6 +53,7 @@ USBHIDConsumerControl consumer;
 void clearManualInputState() {
   mouse.clearState();
   bluetoothButtons = 0;
+  sourceKeyHeld = false;
   if (clicker_bluetooth_output()) {
     const uint8_t keys[6]{};
     bluetoothSend([&] { return ble_keyboard_send(0, keys); });
@@ -153,9 +155,31 @@ String run(const String &line) {
   if (!clicker_manual_begin()) return "err USB input busy";
   ble_hid_priority(true);
   struct ManualRelease { ~ManualRelease() {
-    clicker_manual_end(clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT));
+    clicker_manual_end(sourceKeyHeld || (clicker_bluetooth_output() ? bluetoothButtons != 0 : mouse.isPressed(MOUSE_LEFT)));
     ble_hid_priority(false);
   } } manualRelease;
+  // Keep Control held so iOS's hardware input-source menu remains visible
+  // throughout capture/OCR. Its software keyboard can show QWERTY while the
+  // hardware source is Japanese or Zhuyin, so key-cap OCR alone is unsafe.
+  if (cmd == "source") {
+    if (arg != "next" && arg != "release") return "err usage: source next|release";
+    const uint8_t empty[6]{}, space[6]{0x2c};
+    if (clicker_bluetooth_output()) {
+      if (arg == "release") {
+        if (!bluetoothSend([&] { return ble_keyboard_send(0, empty); })) return "err Bluetooth source release failed";
+        sourceKeyHeld = false; return "ok";
+      }
+      sourceKeyHeld = true;
+      if (!bluetoothSend([&] { return ble_keyboard_send(1, space); })) return "err Bluetooth source switch failed";
+      delay(40);
+      return bluetoothSend([&] { return ble_keyboard_send(1, empty); }) ? "ok" : "err Bluetooth source hold failed";
+    }
+    if (!usbReady()) return "err phone usb asleep (unlock the phone)";
+    if (arg == "release") { keyboard.releaseAll(); sourceKeyHeld = false; return "ok"; }
+    sourceKeyHeld = true;
+    keyboard.press(KEY_LEFT_CTRL); keyboard.press(' '); delay(40); keyboard.release(' ');
+    return "ok";
+  }
   if (clicker_bluetooth_output()) {
     if (!ble_mouse_connected()) return "err Bluetooth mouse not paired/subscribed";
     auto send = [](uint8_t buttons, int8_t x, int8_t y) {

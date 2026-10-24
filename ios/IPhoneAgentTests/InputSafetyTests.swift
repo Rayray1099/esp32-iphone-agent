@@ -68,11 +68,11 @@ import XCTest
 
     func testUnknownKeyboardCyclesToConfirmedEnglishWithoutTypingProbeText() async throws {
         let device = FakeDevice()
-        var observations: [EnglishInput.Layout] = [.unknown, .zhuyin, .other, .english]
+        var observations: [EnglishInput.Layout] = [.zhuyin, .other, .english]
         var freshChecks = 0
         try await EnglishInput.ensure(device: device, observe: { observations.removeFirst() },
                                       changed: { _ in freshChecks += 1 }, log: { _ in })
-        XCTAssertEqual(device.sent, Array(repeating: "key ctrl+space", count: 3))
+        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 3) + ["source release"])
         XCTAssertEqual(freshChecks, 3)
         XCTAssertTrue(observations.isEmpty)
     }
@@ -83,15 +83,15 @@ import XCTest
             try await EnglishInput.ensure(device: device, observe: { .unknown }, changed: { _ in }, log: { _ in })
             XCTFail("Unknown input source was accepted")
         } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(device.sent, Array(repeating: "key ctrl+space", count: 6))
+        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 6) + ["source release"])
         XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("type ") }))
     }
 
-    func testEnglishFastPathDoesNotToggleOrWait() async throws {
+    func testEnglishHardwareSourceAlwaysOpensAndReleasesSelector() async throws {
         let device = FakeDevice()
         try await EnglishInput.ensure(device: device, observe: { .english },
-                                      changed: { _ in XCTFail("Known English waited") }, log: { _ in })
-        XCTAssertTrue(device.sent.isEmpty)
+                                      changed: { _ in }, log: { _ in })
+        XCTAssertEqual(device.sent, ["source next", "source release"])
     }
 
     func testMissingMirroredScreenNeverTypes() async throws {
@@ -114,13 +114,28 @@ import XCTest
     }
 
     func testActualPointerSearchOrdersFocusClearAndTypeWithoutSubmitting() async throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-keyboard", withExtension: "jpg"))
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
         let screen = FakeScreen()
         screen.frame = try Data(contentsOf: url)
         let device = FakeDevice()
         let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), screen: screen)
         try await pointer.search("Weather")
-        XCTAssertEqual(device.sent, ["key cmd+space", "key cmd+a", "key backspace", "type Weather"])
+        XCTAssertEqual(device.sent, ["key cmd+space", "source next", "source release", "key cmd+a", "key backspace", "type Weather"])
+    }
+
+    func testQwertyPixelsCannotConfirmTheHardwareSource() async throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-keyboard", withExtension: "jpg"))
+        let actual = await EnglishInput.read(try Data(contentsOf: url), hardwareSource: true)
+        XCTAssertEqual(actual, .unknown)
+    }
+
+    func testSelectorReleasesControlWhenFrameCheckFails() async {
+        let device = FakeDevice()
+        do {
+            try await EnglishInput.ensure(device: device, observe: { .english }, changed: { _ in throw BlindError() }, log: { _ in })
+            XCTFail("Missing frame was accepted")
+        } catch {}
+        XCTAssertEqual(device.sent, ["source next", "source release"])
     }
 
     func testSmallTargetUsesEachScreenAxisInPoints() {

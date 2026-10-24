@@ -255,6 +255,7 @@ import Foundation
         // so even the same target must be re-anchored after a stroke.
         if rehome, moves <= 1, let p = pos, p.0 == tx, p.1 == ty { return }
         if pos == nil || (rehome && moves >= Self.rehomeEvery) {
+            pos = nil  // a failed/partial home also invalidates the previous landing
             try await device.send("home")
             (pos, moves) = ((0, 0), 0)
         }

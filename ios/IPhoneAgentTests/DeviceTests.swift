@@ -187,6 +187,35 @@ import XCTest
                                      "release", "home", "move 200 400"])
     }
 
+    func testFailedHomeCannotReuseThePreviousTarget() async throws {
+        @MainActor final class FailingHomeDevice: HIDDevice {
+            var links = 1
+            var connected = true
+            var sent: [String] = []
+            var failHome = false
+            func waitConnected(_ timeout: TimeInterval) async -> Bool { connected }
+            func send(_ command: String) async throws -> String {
+                sent.append(command)
+                if command == "home", failHome {
+                    failHome = false
+                    throw DeviceError(message: "partial home")
+                }
+                return ""
+            }
+        }
+        let device = FailingHomeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.point(0.5, 0.5)
+        device.failHome = true
+        do { try await pointer.point(0.25, 0.25); XCTFail("partial home succeeded") }
+        catch { XCTAssertTrue(error is DeviceError) }
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400", "home", "home", "move 200 400"])
+    }
+
     func testHomeUsesMappedButtonWithoutClickingAnAppControl() async throws {
         let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")

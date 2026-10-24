@@ -110,13 +110,13 @@ import XCTest
         XCTAssertTrue(observations.isEmpty)
     }
 
-    func testUnrecognizedKeyboardFailsAfterOneBoundedCycle() async {
+    func testUnrecognizedKeyboardFailsAfterTwoBoundedCycles() async {
         let device = FakeDevice()
         do {
             try await EnglishInput.ensure(device: device, observe: { .unknown }, changed: { _ in }, log: { _ in })
             XCTFail("Unknown input source was accepted")
         } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 6) + ["source release"])
+        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 12) + ["source release"])
         XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("type ") }))
     }
 
@@ -176,12 +176,84 @@ import XCTest
         XCTAssertEqual(actual, .unknown)
     }
 
-    func testSelectorReleasesControlWhenFrameCheckFails() async {
+    func testMissedFirstSourceFrameCyclesAgainBeforeObservingConfirmedEnglish() async throws {
+        let device = FakeDevice()
+        var checks = 0, observations = 0
+        var messages: [String] = []
+        try await EnglishInput.ensure(device: device, observe: {
+            observations += 1
+            return .english
+        }, changed: { _ in
+            checks += 1
+            if checks == 1 { throw BlindError() }
+        }, log: { messages.append($0) })
+        XCTAssertEqual(device.sent, ["source next", "source next", "source release"])
+        XCTAssertEqual(checks, 3) // Missed menu, fresh menu, then fresh release.
+        XCTAssertEqual(observations, 1)
+        XCTAssertTrue(messages.contains(where: { $0.contains("missed fresh menu frame") }))
+    }
+
+    func testAllMissedSourceFramesAreBoundedWithoutOCRAndReleaseControl() async {
+        let device = FakeDevice()
+        var observations = 0
+        do {
+            try await EnglishInput.ensure(device: device, observe: {
+                observations += 1
+                return .english
+            }, changed: { _ in throw BlindError() }, log: { _ in })
+            XCTFail("Missing frame was accepted")
+        } catch { XCTAssertTrue(error is DeviceError) }
+        XCTAssertEqual(observations, 0)
+        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 12) + ["source release"])
+    }
+
+    func testSourceFrameCancellationIsNotRetried() async {
+        let device = FakeDevice()
+        let selection = Task {
+            try await EnglishInput.ensure(device: device, observe: {
+                XCTFail("Cancelled selection reached OCR")
+                return .english
+            }, changed: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw BlindError()
+            }, log: { _ in })
+        }
+        do { try await selection.value; XCTFail("Cancelled selection succeeded") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(device.sent, ["source next", "source release"])
+    }
+
+    func testSourceFrameDeviceErrorIsNotRetried() async {
         let device = FakeDevice()
         do {
-            try await EnglishInput.ensure(device: device, observe: { .english }, changed: { _ in throw BlindError() }, log: { _ in })
-            XCTFail("Missing frame was accepted")
-        } catch {}
+            try await EnglishInput.ensure(device: device, observe: {
+                XCTFail("Failed source capture reached OCR")
+                return .english
+            }, changed: { _ in throw DeviceError(message: "capture device failed") }, log: { _ in })
+            XCTFail("Device failure was accepted")
+        } catch { XCTAssertTrue(error is DeviceError) }
+        XCTAssertEqual(device.sent, ["source next", "source release"])
+    }
+
+    func testSourceCommandFailureIsNotRetried() async {
+        @MainActor final class FailingSourceDevice: HIDDevice {
+            let links = 1, connected = true
+            var sent: [String] = []
+            func waitConnected(_ timeout: TimeInterval) async -> Bool { true }
+            func send(_ command: String) async throws -> String {
+                sent.append(command)
+                if command == "source next" { throw DeviceError(message: "HID submission failed") }
+                return "ok"
+            }
+        }
+        let device = FailingSourceDevice()
+        do {
+            try await EnglishInput.ensure(device: device, observe: {
+                XCTFail("Failed HID command reached OCR")
+                return .english
+            }, changed: { _ in XCTFail("Failed HID command checked freshness") }, log: { _ in })
+            XCTFail("Failed HID command was accepted")
+        } catch { XCTAssertTrue(error is DeviceError) }
         XCTAssertEqual(device.sent, ["source next", "source release"])
     }
 
@@ -237,21 +309,16 @@ import XCTest
         XCTAssertTrue(device.sent.isEmpty)
     }
 
-    func testKeyboardSourceTimeoutReleasesControlWithoutQuietRecoveryOrPointerMoves() async throws {
+    func testKeyboardSourceTimeoutDoesNotEnterQuietRecoveryOrMoveThePointer() async throws {
         let device = FakeDevice()
         let feed = VideoFeed()
         feed.device = device; feed.mirroring = true
         feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
         do {
-            try await EnglishInput.ensure(device: device, observe: {
-                XCTFail("A stale source frame reached OCR")
-                return .english
-            }, changed: { since in
-                try await feed.afterKeyboardSource(since: since)
-            }, log: { _ in })
+            try await feed.afterKeyboardSource(since: now())
             XCTFail("A stale source frame was accepted")
         } catch { XCTAssertTrue(error is BlindError) }
-        XCTAssertEqual(device.sent, ["source next", "source release"])
+        XCTAssertTrue(device.sent.isEmpty)
     }
 
     func testKeyboardSourceSnapModeCapturesDirectlyWithoutQuietRecoveryOrPointerMoves() async throws {

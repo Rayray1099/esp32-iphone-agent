@@ -222,15 +222,21 @@ enum EnglishInput {
     @MainActor static func ensure(device: HIDDevice, observe: () async throws -> Layout,
                                   changed: (Double) async throws -> Void, log: (String) -> Void) async throws {
         log("keyboard: selecting a confirmed English input source")
-        // A bounded cycle includes handwriting/emoji. Never type probe characters
-        // into a user's field, and never retry user text after an uncertain reply.
+        // Up to two passes across six sources can recover a missed transient menu.
+        // Never type probe characters or retry user text after an uncertain reply.
         do {
-            for attempt in 1...6 {
+            for attempt in 1...12 {
                 try Task.checkCancellation()
                 let began = now()
                 try await device.send("source next")
                 let sent = now() // A capture during command delivery can still show the old choice.
-                try await changed(sent)
+                do { try await changed(sent) }
+                catch is BlindError {
+                    try Task.checkCancellation()
+                    log("keyboard source \(attempt)/12: missed fresh menu frame")
+                    continue  // Never OCR the stale frame that failed its freshness check.
+                }
+                try Task.checkCancellation()
                 log(String(format: "keyboard source %d: HID %.0f ms, fresh frame %.0f ms", attempt,
                            (sent - began) * 1000, (now() - sent) * 1000))
                 if try await observe() == .english {

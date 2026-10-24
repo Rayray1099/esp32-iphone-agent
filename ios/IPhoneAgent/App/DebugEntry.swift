@@ -1,4 +1,19 @@
 import Foundation
+import UIKit
+
+/// Match the normal run's background allowance while a physical input test
+/// leaves this app. Expiration ends the assertion, as RunSession does.
+@MainActor private final class InputTestBackground {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    init() {
+        id = UIApplication.shared.beginBackgroundTask(withName: "english-input-test") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
+    }
+}
 
 /// Drive the app without touching the phone, for development:
 ///   iphoneagent://run?task=<urlencoded>   iphoneagent://calibrate   iphoneagent://stop
@@ -58,6 +73,8 @@ extension AppModel {
         Task {
             let began = now()
             var claimed = false
+            var background: InputTestBackground?
+            defer { background?.end() }
             do {
                 guard await waitReady(mirroring: true) else { throw BlindError() }
                 let readyAt = now()
@@ -65,6 +82,7 @@ extension AppModel {
                 claimed = true
                 try await feed.stream(true)
                 _ = try await feed.currentFrame()
+                background = InputTestBackground()
                 guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
                 let searchAt = now()
                 try await pointer.search(query)

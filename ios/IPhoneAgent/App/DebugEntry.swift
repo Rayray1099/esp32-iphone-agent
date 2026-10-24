@@ -82,10 +82,18 @@ extension AppModel {
                 claimed = true
                 try await feed.stream(true)
                 _ = try await feed.currentFrame()
+                // Paste path needs the pasteboard while still in the foreground.
+                var pastedEarly = false
+                if PasteInput.needed(query) {
+                    guard pointer.clipboard.put(query) else {
+                        throw DeviceError(message: "無法寫入剪貼簿，未輸入文字。")
+                    }
+                    pastedEarly = true
+                }
                 background = InputTestBackground()
                 guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
                 let searchAt = now()
-                try await pointer.search(query)
+                try await pointer.search(query, pasted: pastedEarly)
                 let typedAt = now()
                 try await feed.afterAction(since: searchAt)
                 say(String(format: "input test phases: ready %.2f s, setup %.2f s, search %.2f s, final frame %.2f s",

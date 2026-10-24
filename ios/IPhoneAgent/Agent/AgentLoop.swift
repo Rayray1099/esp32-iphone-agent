@@ -22,6 +22,10 @@ struct BlindError: LocalizedError {
 
 extension Pointer: Gestures {}
 
+extension Gestures {
+    func search(_ text: String, pasted: Bool) async throws { try await search(text) }
+}
+
 /// See-think-act loop: a planner model writes the plan, an actor model picks each step. Port of agent.py.
 @MainActor final class AgentLoop: ObservableObject {
     struct Planned {

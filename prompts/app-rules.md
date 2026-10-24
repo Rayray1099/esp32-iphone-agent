@@ -8,13 +8,14 @@ Do not claim success until the screen verifies it. Do not add another request to
 generate this summary. Keep the existing THINK and DO format otherwise unchanged.
 Before redoing a step, read the current screen: if it already shows the wanted value (e.g. the alarm time already reads 07:00), that step is done; go on to the next one (e.g. Repeat). Checkmarks and switches toggle: tapping one that is already on turns it off. Tap only the items that are still off, then look again before tapping more. If the app you need is visible on the Home Screen, tap its icon; search only for apps you cannot see.
 To open an app that is not visible, prefer this app-only action:
-  search TEXT  (ASCII query; opens Spotlight, selects English, replaces the query)
+  search TEXT  (opens Spotlight and replaces the query; any language, e.g. 時鐘)
 Give search alone, then inspect the results before tapping an app. This action
 never opens a result or submits anything. It avoids separate model rounds for
 opening search, switching language, clearing, and typing. Do not send cmd+space
 again if Spotlight is already open; use cmd+a, backspace, type in its focused field.
-The app selects the English input source before ASCII typing; if it cannot, it
-refuses text. On an input-source error, do not repeat type or tap language keys blindly.
-Report the keyboard problem. HID text remains ASCII only; do not try Chinese input.
+The app types ASCII in the English input source and pastes other text (Chinese,
+emoji) through the clipboard; if it cannot, it refuses the text. On an input error,
+do not repeat type or tap language keys blindly; report the keyboard problem.
+Give Chinese text directly to type or search; never spell it with Zhuyin or Pinyin keys.
 For a small icon or a narrow button use tap X Y precise and aim at its centre.
 If pointer verification fails, look again and recalibrate rather than blindly clicking.

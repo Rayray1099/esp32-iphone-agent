@@ -35,6 +35,8 @@ import Foundation
     var screenAspect: () -> Double = { 9 / 19.5 }
     /// Last-resort pointer finder on a frame (the vision model), when the pixel diff finds nothing.
     var locate: ((Data) async -> CGPoint?)?
+    /// Where non-ASCII text goes before Cmd+V.
+    var clipboard: Clipboard = SystemClipboard()
 
     init(device: HIDDevice, calibrationFile: URL, screen: ScreenSource? = nil) {
         self.device = device
@@ -306,28 +308,33 @@ import Foundation
         try await device.send("scroll \(lines) 0")
     }
 
+    /// ASCII is typed in the English source; anything else is pasted (PasteInput).
     func type(_ text: String) async throws {
-        guard text.utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else {
-            throw DeviceError(message: "目前 HID 文字輸入只支援英文與 ASCII。請勿用注音按鍵猜測中文字。")
-        }
         guard screen?.live == true else { throw BlindError() }
+        if PasteInput.needed(text) { return try await PasteInput.paste(text, clipboard: clipboard, device: device, log: log) }
         try await EnglishInput.ensure(device: device, log: log)
         try await device.send("type \(text)")
     }
 
     /// One locally verified keyboard operation, with no model calls or mouse aiming.
     /// It only enters the query; the actor must inspect results before opening any app.
-    func search(_ text: String) async throws {
-        guard !text.isEmpty, text.utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else {
-            throw DeviceError(message: "Spotlight 搜尋需要非空白英文或 ASCII 查詢。")
+    func search(_ text: String) async throws { try await search(text, pasted: false) }
+
+    /// pasteboard: when true, the caller already put text on the clipboard (it did so while still foreground).
+    func search(_ text: String, pasted preput: Bool) async throws {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !text.contains(where: \.isNewline) else {
+            throw DeviceError(message: "Spotlight 搜尋需要單行非空白查詢。")
         }
         guard let screen, screen.live else { throw BlindError() }
+        let paste = PasteInput.needed(text)
+        if paste, !preput { guard clipboard.put(text) else { throw DeviceError(message: "無法寫入剪貼簿，未輸入文字。") } }
         let sent = now()
         try await device.send("key cmd+space")
         try await screen.afterAction(since: sent)
-        try await EnglishInput.ensure(device: device, log: log)
+        if !paste { try await EnglishInput.ensure(device: device, log: log) }
         try await device.send("key cmd+a")
         try await device.send("key backspace")
+        if paste { try await device.send("key cmd+v"); log("keyboard: pasted \(text.count) characters"); return }
         try await device.send("type \(text)")
     }
     func key(_ combo: String) async throws { try await device.send("key \(combo)") }

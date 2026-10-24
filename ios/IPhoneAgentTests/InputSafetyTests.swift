@@ -57,6 +57,55 @@ import CoreGraphics
         XCTAssertEqual(device.sent, ["key eisu", "type AbC_123!"])
     }
 
+    func testChineseIsPastedWithoutTypingOrSourceKeys() async throws {
+        let device = FakeDevice()
+        let screen = FakeScreen()
+        let clipboard = FakeClipboard()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        pointer.clipboard = clipboard
+        try await pointer.type("時鐘 7:00 ✅")
+        XCTAssertEqual(clipboard.texts, ["時鐘 7:00 ✅"])
+        XCTAssertEqual(device.sent, ["key cmd+v"])
+    }
+
+    func testAsciiNeverTouchesTheClipboard() async throws {
+        let device = FakeDevice()
+        let screen = FakeScreen()
+        let clipboard = FakeClipboard()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        pointer.clipboard = clipboard
+        try await pointer.type("Weather 7")
+        XCTAssertTrue(clipboard.texts.isEmpty)
+        XCTAssertEqual(device.sent, ["key eisu", "type Weather 7"])
+    }
+
+    func testUnconfirmedClipboardWriteNeverPastes() async throws {
+        let device = FakeDevice()
+        let screen = FakeScreen()
+        let clipboard = FakeClipboard()
+        clipboard.works = false
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        pointer.clipboard = clipboard
+        do { try await pointer.type("天氣"); XCTFail("Pasted without a confirmed clipboard write") }
+        catch { XCTAssertTrue((error as? DeviceError)?.message.contains("剪貼簿") == true, "\(error)") }
+        XCTAssertTrue(device.sent.isEmpty)
+    }
+
+    func testChineseSearchClearsThenPastesWithoutSubmitting() async throws {
+        let device = FakeDevice()
+        let screen = FakeScreen()
+        let clipboard = FakeClipboard()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        pointer.clipboard = clipboard
+        try await pointer.search("時鐘")
+        XCTAssertEqual(device.sent, ["key cmd+space", "key cmd+a", "key backspace", "key cmd+v"])
+        XCTAssertEqual(clipboard.texts, ["時鐘"])
+    }
+
     func testSpotlightSearchIsOneActorActionAndNeverPressesReturn() async throws {
         let phone = FakeGestures()
         let screen = FakeScreen()
@@ -118,4 +167,14 @@ import CoreGraphics
         return "ok"
     }
     func waitConnected(_ timeout: TimeInterval) async -> Bool { true }
+}
+
+@MainActor private final class FakeClipboard: Clipboard {
+    var works = true
+    var texts: [String] = []
+    func put(_ text: String) -> Bool {
+        guard works else { return false }
+        texts.append(text)
+        return true
+    }
 }

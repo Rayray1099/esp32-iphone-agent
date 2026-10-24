@@ -10,6 +10,8 @@ import UIKit
     var aspect: Double { get }
     /// After a gesture that ended at `since`: wait until the screen shows its result (and fetch it, in snap mode).
     func afterAction(since: Double) async throws
+    /// A keyboard-source change needs a fresh selector frame, not a quiet whole screen.
+    func afterKeyboardSource(since: Double) async throws
 }
 
 /// How a run gets its frames: the live stream (`stream on`, the default: a frame in under a second), or one
@@ -27,6 +29,7 @@ enum FrameMode: String {
 
 extension ScreenSource {
     func afterAction(since: Double) async { await settled() }
+    func afterKeyboardSource(since: Double) async throws { try await afterAction(since: since) }
 
     /// Wait until the screen stops changing (AirPlay only sends frames on change). Mid-animation frames are big and
     /// can reach us late over BLE, so a gap is only "quiet" once it also covers the last frame's transport lag.
@@ -340,6 +343,33 @@ extension ScreenSource {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
+    }
+
+    /// Source selection is checked by local OCR while Control keeps the menu
+    /// visible. Cursor/suggestion animations elsewhere must not force its four-
+    /// second whole-screen quiet window. Require a capture after the HID reply
+    /// and a short selector-animation margin; Wi-Fi must also have decoded the
+    /// newest board watermark. The existing recovery remains the fallback.
+    func afterKeyboardSource(since: Double) async throws {
+        if (localActive || (streamOn && FrameMode.current == .stream)),
+           try await waitForKeyboardSourceFrame(since: since) { return }
+        try Task.checkCancellation()
+        DebugLog.write("keyboard frame: short fresh wait exhausted; using full capture recovery")
+        try await afterAction(since: since)
+    }
+
+    /// A bounded fast path, separately exercised with stale and changing frames.
+    /// Never substitute arrival time or a healthy transport for capture freshness.
+    func waitForKeyboardSourceFrame(since: Double, timeout: Double = 1.2) async throws -> Bool {
+        let deadline = now() + timeout
+        let readyAfter = since + 0.2
+        repeat {
+            try Task.checkCancellation()
+            if live, capturedAt >= readyAfter,
+               !localActive || (localVerifiedAt > now() - 2 && decodedBoardMs == localLatestMs) { return true }
+            if now() >= deadline { return false }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        } while true
     }
 
     /// The model must never see a frame from before the action that ended at `since`. Stream: let the screen

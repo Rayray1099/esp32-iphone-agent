@@ -225,20 +225,26 @@ enum EnglishInput {
         // A bounded cycle includes handwriting/emoji. Never type probe characters
         // into a user's field, and never retry user text after an uncertain reply.
         do {
-            for _ in 0..<6 {
+            for attempt in 1...6 {
                 try Task.checkCancellation()
-                let sent = now()
+                let began = now()
                 try await device.send("source next")
+                let sent = now() // A capture during command delivery can still show the old choice.
                 try await changed(sent)
+                log(String(format: "keyboard source %d: HID %.0f ms, fresh frame %.0f ms", attempt,
+                           (sent - began) * 1000, (now() - sent) * 1000))
                 if try await observe() == .english {
-                    let released = now()
+                    let releaseBegan = now()
                     try await device.send("source release")
+                    let released = now()
                     // A highlighted row is only a pending choice while Control
                     // is held. Let iOS commit it and dismiss the selector before
                     // the first ASCII key, then require the capture path to be
                     // fresh after that release as for every other HID action.
                     try await changed(released)
                     try Task.checkCancellation()
+                    log(String(format: "keyboard release: HID %.0f ms, fresh frame %.0f ms",
+                               (released - releaseBegan) * 1000, (now() - released) * 1000))
                     log("keyboard: hardware English confirmed")
                     return
                 }
@@ -260,7 +266,7 @@ enum EnglishInput {
             log(String(format: "keyboard: %@ (%.0f ms)", String(describing: result), (now() - began) * 1000))
             return result
         }, changed: { sent in
-            try await screen.afterAction(since: sent)
+            try await screen.afterKeyboardSource(since: sent)
         }, log: log)
     }
 }

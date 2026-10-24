@@ -50,8 +50,8 @@ static NimBLECharacteristic *keyboardReport, *consumerReport;
 static std::atomic<int> mousePeer{-1};
 static int64_t lastMouseReportUs = 0;
 static uint8_t mouseMap[] = {
-  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(1)),
   TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(2)),
+  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(1)),
   TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(3))
 };
 static NimBLECharacteristic *chars[CH_COUNT], *netChar;

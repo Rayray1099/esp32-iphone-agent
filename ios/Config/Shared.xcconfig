@@ -20,6 +20,6 @@ IA_PRESET_KEY =
 
 // The app and its widget extension share these; fastlane sets the build number for each upload.
 MARKETING_VERSION = 1.1
-CURRENT_PROJECT_VERSION = 21
+CURRENT_PROJECT_VERSION = 22
 
 #include? "Local.xcconfig"

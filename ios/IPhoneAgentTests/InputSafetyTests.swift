@@ -185,6 +185,67 @@ import XCTest
         XCTAssertEqual(device.sent, ["source next", "source release"])
     }
 
+    func testSearchUsesSourceFreshnessOnlyForSelectorAndRelease() async throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
+        let screen = SourceFreshnessScreen(frame: try Data(contentsOf: url))
+        let device = FakeDevice()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), screen: screen)
+        try await pointer.search("Weather")
+        XCTAssertEqual(screen.gestures, 1) // Spotlight focus still uses normal gesture recovery.
+        XCTAssertEqual(screen.sourceChanges, 2) // Choice and Control release both require freshness.
+        XCTAssertEqual(device.sent, ["key cmd+space", "source next", "source release", "key cmd+a", "key backspace", "type Weather"])
+    }
+
+    func testSourceFreshnessStartsAfterTheHIDReplyRatherThanBeforeDelivery() async throws {
+        let device = SourceTimingDevice()
+        var cutoffs: [Double] = []
+        try await EnglishInput.ensure(device: device, observe: { .english },
+                                      changed: { cutoffs.append($0) }, log: { _ in })
+        XCTAssertEqual(cutoffs.count, 2)
+        XCTAssertEqual(device.repliedAt.count, 2)
+        for (cutoff, reply) in zip(cutoffs, device.repliedAt) { XCTAssertGreaterThanOrEqual(cutoff, reply) }
+    }
+
+    func testKeyboardFastWaitRejectsAFrameCapturedBeforeTheSourceChange() async throws {
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+        let ready = try await feed.waitForKeyboardSourceFrame(since: now(), timeout: 0.06)
+        XCTAssertFalse(ready)
+        XCTAssertTrue(device.sent.isEmpty) // The fast wait itself must not move/click/type.
+    }
+
+    func testKeyboardFastWaitRequiresAnimationMarginButNotWholeScreenQuiet() async throws {
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        let began = now()
+        var updatesFinished = false
+        let updates = Task { @MainActor in
+            for _ in 0..<40 {
+                if Task.isCancelled { return }
+                feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            updatesFinished = true
+        }
+        defer { updates.cancel() }
+        let ready = try await feed.waitForKeyboardSourceFrame(since: began, timeout: 1.2)
+        XCTAssertTrue(ready)
+        XCTAssertGreaterThanOrEqual(feed.capturedAt, began + 0.2)
+        XCTAssertFalse(updatesFinished) // Continuous cursor frames no longer force a quiet window.
+        XCTAssertTrue(device.sent.isEmpty)
+    }
+
+    func testKeyboardFastWaitPropagatesCancellation() async {
+        let feed = VideoFeed()
+        let wait = Task { try await feed.waitForKeyboardSourceFrame(since: now()) }
+        wait.cancel()
+        do { _ = try await wait.value; XCTFail("Cancelled source capture was accepted") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+
     func testSmallTargetUsesEachScreenAxisInPoints() {
         let size = CGSize(width: 440, height: 956)
         let target = CGPoint(x: 0.5, y: 0.5)
@@ -213,4 +274,25 @@ import XCTest
         try Data(#"{"w":522,"h":1204}"#.utf8).write(to: file)
         XCTAssertFalse(Pointer(device: FakeDevice(), calibrationFile: file).calibrated)
     }
+}
+
+@MainActor private final class SourceFreshnessScreen: ScreenSource {
+    let live = true
+    let frame: Data?
+    let updated = 0.0, capturedAt = 0.0, aspect = 0.46
+    var gestures = 0, sourceChanges = 0
+    init(frame: Data) { self.frame = frame }
+    func afterAction(since: Double) async throws { gestures += 1 }
+    func afterKeyboardSource(since: Double) async throws { sourceChanges += 1 }
+}
+
+@MainActor private final class SourceTimingDevice: HIDDevice {
+    let links = 1, connected = true
+    var repliedAt: [Double] = []
+    func send(_ command: String) async throws -> String {
+        try await Task.sleep(nanoseconds: 20_000_000)
+        repliedAt.append(now())
+        return "ok"
+    }
+    func waitConnected(_ timeout: TimeInterval) async -> Bool { true }
 }

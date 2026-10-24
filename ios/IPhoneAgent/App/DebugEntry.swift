@@ -60,6 +60,7 @@ extension AppModel {
             var claimed = false
             do {
                 guard await waitReady(mirroring: true) else { throw BlindError() }
+                let readyAt = now()
                 _ = try await board.commands.send("v1 POST input/claim {}")
                 claimed = true
                 try await feed.stream(true)
@@ -67,7 +68,10 @@ extension AppModel {
                 guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
                 let searchAt = now()
                 try await pointer.search(query)
+                let typedAt = now()
                 try await feed.afterAction(since: searchAt)
+                say(String(format: "input test phases: ready %.2f s, setup %.2f s, search %.2f s, final frame %.2f s",
+                           readyAt - began, searchAt - readyAt, typedAt - searchAt, now() - typedAt))
                 say(String(format: "input test: search sent and fresh screen verified in %.2f s", now() - began))
             } catch { say("input test failed: " + error.localizedDescription) }
             if claimed { _ = try? await board.commands.send("v1 POST input/release {}") }

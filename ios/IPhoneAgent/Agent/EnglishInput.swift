@@ -187,7 +187,7 @@ enum EnglishInput {
         throw DeviceError(message: "未能確認英文輸入來源，未輸入文字。請選擇 English (US) 後再試。")
     }
 
-    @MainActor static func ensure(screen: ScreenSource, device: HIDDevice, log: (String) -> Void) async throws {
+    @MainActor static func ensure(screen: ScreenSource, device: HIDDevice, log: @escaping (String) -> Void) async throws {
         try await ensure(device: device, observe: {
             guard screen.live, let frame = screen.frame else { throw BlindError() }
             let began = now()

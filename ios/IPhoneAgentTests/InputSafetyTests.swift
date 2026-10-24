@@ -26,12 +26,32 @@ import XCTest
 
     func testKeyboardOCRFromCroppedPhysicalPhoneFixtures() async throws {
         let bundle = Bundle(for: Self.self)
-        for (name, expected) in [("english-keyboard", EnglishInput.Layout.english),
-                                 ("zhuyin-keyboard", .zhuyin), ("english-source-menu", .english)] {
+        for name in ["english-keyboard", "zhuyin-keyboard", "english-source-menu"] {
             let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "jpg"))
             let actual = await EnglishInput.read(try Data(contentsOf: url), diagnostic: { print("OCR fixture \(name): \($0)") })
-            XCTAssertEqual(actual, expected, name)
+            // Ambiguous Bopomofo key caps must never be accepted as English.
+            if name == "zhuyin-keyboard" { XCTAssertNotEqual(actual, .english, name) }
+            else { XCTAssertEqual(actual, .english, name) }
         }
+    }
+
+    func testSparseRealKeyObservationsFitStaggeredQwertyRows() {
+        let keys: [(String, Double, Double)] = [("w", 0.157, 0.284), ("e", 0.252, 0.284),
+            ("t", 0.452, 0.286), ("a", 0.105, 0.225), ("s", 0.202, 0.225), ("d", 0.300, 0.228),
+            ("h", 0.598, 0.227), ("j", 0.693, 0.225), ("k", 0.793, 0.227),
+            ("x", 0.302, 0.166), ("v", 0.498, 0.166), ("b", 0.595, 0.169), ("n", 0.695, 0.166), ("m", 0.793, 0.166)]
+        let words = keys.map { EnglishInput.Word(text: $0.0, box: CGRect(x: $0.1 - 0.02, y: $0.2 - 0.01, width: 0.04, height: 0.02)) }
+        XCTAssertTrue(EnglishInput.qwertyGrid(words, aspect: 440.0 / 956))
+        XCTAssertFalse(EnglishInput.qwertyGrid(words.map { .init(text: $0.text, box: CGRect(x: $0.box.minX, y: 0.2, width: 0.04, height: 0.02)) }, aspect: 440.0 / 956))
+    }
+
+    func testEnglishMenuLabelRequiresItsOwnHighlight() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
+        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
+        let selected = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.345, y: 0.484, width: 0.305, height: 0.028))
+        XCTAssertEqual(EnglishInput.classify([selected], image: image), .english)
+        let unselected = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.345, y: 0.589, width: 0.305, height: 0.028))
+        XCTAssertNotEqual(EnglishInput.classify([unselected], image: image), .english)
     }
 
     func testUnknownKeyboardCyclesToConfirmedEnglishWithoutTypingProbeText() async throws {

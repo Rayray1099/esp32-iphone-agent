@@ -22,6 +22,35 @@ enum EnglishInput {
         return .unknown
     }
 
+    /// OCR misses individual key caps. Require their positions to fit the three
+    /// staggered QWERTY rows, rather than counting letters in suggestions.
+    static func qwertyGrid(_ words: [Word], aspect: Double) -> Bool {
+        let rows = [Array("qwertyuiop"), Array("asdfghjkl"), Array("zxcvbnm")]
+        let starts = [0.06, 0.106, 0.204]
+        let keys = words.filter { $0.text.count == 1 && $0.box.width < 0.085 && $0.box.midY < 0.45 }
+        for spacing in [0.12, 0.13, 0.14] {
+            let gap = spacing * aspect
+            for anchor in keys {
+                for row in rows.indices {
+                    guard let col = rows[row].firstIndex(of: Character(anchor.text.lowercased())),
+                          abs(anchor.box.midX - (starts[row] + Double(col) * 0.098)) < 0.035 else { continue }
+                    let top = anchor.box.midY + Double(row) * gap
+                    var hits = Set<String>(), hitRows = Set<Int>()
+                    for key in keys {
+                        for r in rows.indices {
+                            guard let c = rows[r].firstIndex(of: Character(key.text.lowercased())),
+                                  abs(key.box.midX - (starts[r] + Double(c) * 0.098)) < 0.035,
+                                  abs(key.box.midY - (top - Double(r) * gap)) < gap * 0.25 else { continue }
+                            hits.insert(key.text.lowercased()); hitRows.insert(r)
+                        }
+                    }
+                    if hits.count >= 8 && hitRows.count >= 2 { return true }
+                }
+            }
+        }
+        return false
+    }
+
     static func classify(_ words: [Word], image: CGImage) -> Layout {
         // Ctrl-Space lists every language. "English" in that list does not mean
         // it is selected; compare backgrounds beside the option labels.
@@ -30,22 +59,31 @@ enum EnglishInput {
             word.box.midX > 0.25 && word.box.midX < 0.75 && word.box.midY > 0.25 && word.box.midY < 0.8 &&
             labels.contains(where: { word.text.lowercased().contains($0) })
         }
-        if options.count >= 2, let left = options.map({ $0.box.minX }).min() {
+        if !options.isEmpty {
             let gray = Vision.gray(image, image.width, image.height)
-            let scores = options.map { word -> (Word, Double) in
-                let x = max(0, Int((left - 0.025) * Double(gray.w)))
-                let y = max(0, Int((1 - word.box.midY - 0.008) * Double(gray.h)))
-                let width = max(2, Int(Double(gray.w) * 0.015))
-                let height = max(2, Int(Double(gray.h) * 0.016))
+            func background(_ x: Double, _ y: Double) -> Double {
+                let cx = Int(x * Double(gray.w)), cy = Int((1 - y) * Double(gray.h))
                 var total = 0, count = 0
-                for row in y..<min(gray.h, y + height) {
-                    for col in x..<min(gray.w, x + width) { total += Int(gray.px[row * gray.w + col]); count += 1 }
+                for row in max(0, cy - 3)..<min(gray.h, cy + 4) {
+                    for col in max(0, cx - 2)..<min(gray.w, cx + 3) { total += Int(gray.px[row * gray.w + col]); count += 1 }
                 }
-                return (word, Double(total) / Double(max(count, 1)))
-            }.sorted { $0.1 > $1.1 }
-            guard scores[0].1 - scores[1].1 >= 8 else { return .unknown }
-            return layout([scores[0].0.text])
+                return Double(total) / Double(max(count, 1))
+            }
+            // Compare each label's margins with the rows directly above/below.
+            // This also works when OCR reads only the English label in a menu.
+            let selected = options.filter { word in
+                let step = word.box.height * 1.85
+                return [word.box.minX - 0.02, word.box.maxX + 0.02].contains { x in
+                    let value = background(x, word.box.midY)
+                    return value > background(x, word.box.midY + step) + 12 &&
+                           value > background(x, word.box.midY - step) + 12
+                }
+            }
+            guard let first = selected.first,
+                  selected.allSatisfy({ abs($0.box.midY - first.box.midY) < 0.015 }) else { return .unknown }
+            return layout(selected.map { $0.text })
         }
+        if qwertyGrid(words, aspect: Double(image.width) / Double(image.height)) { return .english }
         return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
 
@@ -61,13 +99,25 @@ enum EnglishInput {
             request.recognitionLanguages = ["en-US", "zh-Hant"]
             request.usesLanguageCorrection = false
             request.minimumTextHeight = 0.008
-            request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 0.8)
+            // Full image coordinates keep key positions and menu pixel samples
+            // in the same space. Vision's ROI boxes are relative to the ROI.
             do {
                 try VNImageRequestHandler(cgImage: image).perform([request])
-                let words = (request.results ?? []).compactMap { r in
+                var words = (request.results ?? []).compactMap { r in
                     r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
                 }
                 diagnostic?(words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
+                let first = classify(words, image: image)
+                if first != .unknown { return first }
+                // Chinese input-source labels and the small 注 space-bar hint
+                // can disappear when English has recognition priority. The
+                // common English path needs only the first pass.
+                request.recognitionLanguages = ["zh-Hant", "en-US"]
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                words += (request.results ?? []).compactMap { r in
+                    r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
+                }
+                diagnostic?("Chinese pass: " + words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
                 return classify(words, image: image)
             } catch {
                 diagnostic?("OCR failed: \(error)")

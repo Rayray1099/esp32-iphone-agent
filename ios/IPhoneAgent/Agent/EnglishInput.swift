@@ -7,6 +7,39 @@ enum EnglishInput {
     enum Layout: Equatable { case english, zhuyin, other, unknown }
     struct Word { let text: String; let box: CGRect } // Vision coordinates, origin bottom left
 
+    struct SourceImage {
+        let image: CGImage
+        let box: CGRect // Region of the full frame, in Vision coordinates.
+
+        func fullFrame(_ word: Word) -> Word {
+            Word(text: word.text, box: CGRect(x: box.minX + word.box.minX * box.width,
+                                             y: box.minY + word.box.minY * box.height,
+                                             width: word.box.width * box.width,
+                                             height: word.box.height * box.height))
+        }
+    }
+
+    /// The hardware-source selector is centered on iOS. OCR only its region:
+    /// a full AirPlay frame spends CPU time recognizing unrelated app content.
+    /// Keep the pixel crop's exact bounds so highlight samples use full-frame
+    /// coordinates rather than Vision's crop-relative bounding boxes.
+    static func sourceImage(_ image: CGImage) -> SourceImage? {
+        let pixels = CGRect(x: Double(image.width) * 0.18, y: Double(image.height) * 0.18,
+                            width: Double(image.width) * 0.64, height: Double(image.height) * 0.64).integral
+        guard let crop = image.cropping(to: pixels) else { return nil }
+        let width = min(440, crop.width)
+        let height = Int((Double(crop.height) * Double(width) / Double(crop.width)).rounded())
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else { return nil }
+        return SourceImage(image: scaled, box: CGRect(x: pixels.minX / Double(image.width),
+                                                    y: 1 - pixels.maxY / Double(image.height),
+                                                    width: pixels.width / Double(image.width),
+                                                    height: pixels.height / Double(image.height)))
+    }
+
     /// Crop pixels, not Vision's ROI: its returned boxes are ROI-relative. A
     /// keyboard-only pass also avoids the recognizer spending time on app icons
     /// and missing small isolated key caps in a full mirrored frame.
@@ -86,15 +119,23 @@ enum EnglishInput {
                 }
                 return Double(total) / Double(max(count, 1))
             }
-            // Compare each label's margins with the rows directly above/below.
-            // This also works when OCR reads only the English label in a menu.
+            // A translucent menu can be brighter near its bottom even when that
+            // row is not selected. Require the rounded selection pill's two
+            // horizontal edges and a vertical peak at one of those margins.
+            // Scale by the font's pixel height so this works at any size.
             let selected = options.filter { word in
                 let step = word.box.height * 1.85
-                return [word.box.minX - 0.02, word.box.maxX + 0.02].contains { x in
+                let textHeight = word.box.height * Double(image.height) / Double(image.width)
+                var verticalPeak = false
+                let edges = [-1.0, 1.0].allSatisfy { side in
+                    let edge = side < 0 ? word.box.minX : word.box.maxX
+                    let x = edge + side * textHeight * 0.3
                     let value = background(x, word.box.midY)
-                    return value > background(x, word.box.midY + step) + 12 &&
-                           value > background(x, word.box.midY - step) + 12
+                    if value > background(x, word.box.midY + step) + 12 &&
+                       value > background(x, word.box.midY - step) + 12 { verticalPeak = true }
+                    return value > background(edge + side * textHeight * 0.7, word.box.midY) + 12
                 }
+                return edges && verticalPeak
             }
             guard let first = selected.first,
                   selected.allSatisfy({ abs($0.box.midY - first.box.midY) < 0.015 }) else { return .unknown }
@@ -142,10 +183,16 @@ enum EnglishInput {
                 request.recognitionLevel = .accurate
                 request.recognitionLanguages = ["en-US", "zh-Hant"]
                 request.minimumTextHeight = 0.008
-                try VNImageRequestHandler(cgImage: image).perform([request])
+                let source = hardwareSource ? sourceImage(image) : nil
+                let recognitionImage = source?.image ?? image
+                try VNImageRequestHandler(cgImage: recognitionImage).perform([request])
                 var words = (request.results ?? []).compactMap { r in
-                    r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
+                    r.topCandidates(1).first.map {
+                        let word = Word(text: $0.string, box: r.boundingBox)
+                        return source?.fullFrame(word) ?? word
+                    }
                 }
+                summary?("\(hardwareSource ? "source" : "full") \(recognitionImage.width)x\(recognitionImage.height), accurate, \(words.count) observations")
                 diagnostic?(words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
                 let first = classify(words, image: image, hardwareSource: hardwareSource)
                 if first != .unknown { return first }
@@ -153,9 +200,12 @@ enum EnglishInput {
                 // can disappear when English has recognition priority. The
                 // common English path needs only the first pass.
                 request.recognitionLanguages = ["zh-Hant", "en-US"]
-                try VNImageRequestHandler(cgImage: image).perform([request])
+                try VNImageRequestHandler(cgImage: recognitionImage).perform([request])
                 words += (request.results ?? []).compactMap { r in
-                    r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
+                    r.topCandidates(1).first.map {
+                        let word = Word(text: $0.string, box: r.boundingBox)
+                        return source?.fullFrame(word) ?? word
+                    }
                 }
                 diagnostic?("Chinese pass: " + words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
                 return classify(words, image: image, hardwareSource: hardwareSource)
@@ -181,7 +231,14 @@ enum EnglishInput {
                 try await device.send("source next")
                 try await changed(sent)
                 if try await observe() == .english {
+                    let released = now()
                     try await device.send("source release")
+                    // A highlighted row is only a pending choice while Control
+                    // is held. Let iOS commit it and dismiss the selector before
+                    // the first ASCII key, then require the capture path to be
+                    // fresh after that release as for every other HID action.
+                    try await changed(released)
+                    try Task.checkCancellation()
                     log("keyboard: hardware English confirmed")
                     return
                 }

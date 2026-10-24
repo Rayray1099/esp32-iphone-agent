@@ -66,6 +66,39 @@ import XCTest
         XCTAssertNotEqual(EnglishInput.classify([unselected], image: image), .english)
     }
 
+    func testBrightTranslucentUnselectedMenuRowIsNotASelection() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
+        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
+        // The bright wallpaper behind this bottom row used to pass both vertical
+        // comparisons. It has no selection pill edge around its label.
+        let japanese = EnglishInput.Word(text: "日本語手書き", box: CGRect(x: 0.35, y: 0.381, width: 0.32, height: 0.027))
+        XCTAssertEqual(EnglishInput.classify([japanese], image: image, hardwareSource: true), .unknown)
+        let english = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.3499, y: 0.483, width: 0.3002, height: 0.0298))
+        XCTAssertEqual(EnglishInput.classify([japanese, english], image: image, hardwareSource: true), .english)
+    }
+
+    func testSourceCropMapsMenuLabelsBackToTheirHighlightPixels() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
+        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
+        let source = try XCTUnwrap(EnglishInput.sourceImage(image))
+        XCTAssertLessThan(source.image.width * source.image.height, image.width * image.height / 2)
+        let selected = CGRect(x: 0.345, y: 0.484, width: 0.305, height: 0.028)
+        let local = EnglishInput.Word(text: "English (US)", box: CGRect(
+            x: (selected.minX - source.box.minX) / source.box.width,
+            y: (selected.minY - source.box.minY) / source.box.height,
+            width: selected.width / source.box.width, height: selected.height / source.box.height))
+        let mapped = source.fullFrame(local)
+        XCTAssertEqual(mapped.box.minX, selected.minX, accuracy: 0.000001)
+        XCTAssertEqual(mapped.box.minY, selected.minY, accuracy: 0.000001)
+        XCTAssertEqual(EnglishInput.classify([mapped], image: image, hardwareSource: true), .english)
+    }
+
+    func testHardwareSourceOCRFromCroppedMenu() async throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
+        let actual = await EnglishInput.read(try Data(contentsOf: url), hardwareSource: true)
+        XCTAssertEqual(actual, .english)
+    }
+
     func testUnknownKeyboardCyclesToConfirmedEnglishWithoutTypingProbeText() async throws {
         let device = FakeDevice()
         var observations: [EnglishInput.Layout] = [.zhuyin, .other, .english]
@@ -73,7 +106,7 @@ import XCTest
         try await EnglishInput.ensure(device: device, observe: { observations.removeFirst() },
                                       changed: { _ in freshChecks += 1 }, log: { _ in })
         XCTAssertEqual(device.sent, Array(repeating: "source next", count: 3) + ["source release"])
-        XCTAssertEqual(freshChecks, 3)
+        XCTAssertEqual(freshChecks, 4) // three pending choices, then the committed release
         XCTAssertTrue(observations.isEmpty)
     }
 
@@ -89,9 +122,23 @@ import XCTest
 
     func testEnglishHardwareSourceAlwaysOpensAndReleasesSelector() async throws {
         let device = FakeDevice()
+        var checkedCommands: [String] = []
         try await EnglishInput.ensure(device: device, observe: { .english },
-                                      changed: { _ in }, log: { _ in })
+                                      changed: { _ in checkedCommands.append(device.sent.last!) }, log: { _ in })
         XCTAssertEqual(device.sent, ["source next", "source release"])
+        XCTAssertEqual(checkedCommands, ["source next", "source release"])
+    }
+
+    func testSelectedEnglishCannotProceedWithoutAFreshReleaseFrame() async {
+        let device = FakeDevice()
+        do {
+            try await EnglishInput.ensure(device: device, observe: { .english }, changed: { _ in
+                if device.sent.last == "source release" { throw BlindError() }
+            }, log: { _ in })
+            XCTFail("A pending English choice was accepted without its committed frame")
+        } catch { XCTAssertTrue(error is BlindError) }
+        XCTAssertEqual(device.sent, ["source next", "source release", "source release"])
+        XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("type ") }))
     }
 
     func testMissingMirroredScreenNeverTypes() async throws {

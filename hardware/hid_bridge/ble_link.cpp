@@ -380,7 +380,9 @@ void ble_begin(const String &name) {
   for (auto *c : chars) c->setCallbacks(&charCb);
   auto *hid = new NimBLEHIDDevice(server);
   hid->setManufacturer("ESP32 Agent");
-  hid->setPnp(0x02, 0x303A, 0x4001, 0x0200);
+  // The old 0x0200 identity advertised only a mouse. Distinguish the complete
+  // keyboard + mouse report database when a host refreshes its HID identity.
+  hid->setPnp(0x02, 0x303A, 0x4001, 0x0300);
   hid->setHidInfo(0, 0x02);
   hid->setReportMap(mouseMap, sizeof mouseMap);
   mouseReport = hid->getInputReport(1);
@@ -389,13 +391,23 @@ void ble_begin(const String &name) {
   consumerReport = hid->getInputReport(3);
   keyboardReport->setCallbacks(&charCb);
   consumerReport->setCallbacks(&charCb);
+  // TUD_HID_REPORT_DESC_KEYBOARD declares report 2's one-byte LED output as
+  // well as its eight-byte input. Register it after the existing input reports
+  // to keep their handles stable for bonded hosts. No callback is needed: the
+  // GATT characteristic retains the latest host LED value for reads.
+  hid->getOutputReport(2)->setValue(uint8_t(0));
   hid->setBatteryLevel(100);
   server->start();
+  // Firmware upgrades change the HID report map before server->start(), so
+  // NimBLE's runtime service-change flag does not see them. Its API also marks
+  // persisted CCCDs so disconnected bonded subscribers refresh on reconnect.
+  // Retain all bonds; a host must acknowledge this indication itself.
+  server->sendServiceChangedIndication();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   NimBLEAdvertisementData data, scan;
   data.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-  data.setAppearance(HID_MOUSE);
+  data.setAppearance(HID_KEYBOARD);
   data.addServiceUUID(NimBLEUUID(uint16_t(0x1812)));
   data.setName(name.c_str());
   scan.addServiceUUID(NimBLEUUID(UUID("0000")));

@@ -193,6 +193,12 @@ void video_stream(bool on) {
   if (on) airplay_request_keyframe();
 }
 
+void video_request_keyframe() {
+  // This API only queues the request; the AirPlay event worker performs RTSP I/O.
+  // Keep the cached GOP available until an actual IDR arrives.
+  airplay_request_keyframe();
+}
+
 static void request(const String &id, bool bench, uint32_t kb) {
   Req r = {{0}, kb, bench};
   strncpy(r.id, id.c_str(), sizeof r.id - 1);

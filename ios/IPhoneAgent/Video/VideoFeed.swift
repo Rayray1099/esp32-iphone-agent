@@ -345,27 +345,26 @@ extension ScreenSource {
         }
     }
 
-    /// Source selection is checked by local OCR while Control keeps the menu
-    /// visible. Cursor/suggestion animations elsewhere must not force its four-
-    /// second whole-screen quiet window. Require a capture after the HID reply
-    /// and a short selector-animation margin; Wi-Fi must also have decoded the
-    /// newest board watermark. The existing recovery remains the fallback.
+    /// The source menu can dismiss even while Control is held. Inspect the first
+    /// capture after the HID reply; an extra animation margin or whole-screen
+    /// quiet wait can discard the only visible selector frame. A timeout fails
+    /// closed so EnglishInput releases Control without entering text.
     func afterKeyboardSource(since: Double) async throws {
-        if (localActive || (streamOn && FrameMode.current == .stream)),
-           try await waitForKeyboardSourceFrame(since: since) { return }
         try Task.checkCancellation()
-        DebugLog.write("keyboard frame: short fresh wait exhausted; using full capture recovery")
-        try await afterAction(since: since)
+        if !localActive, FrameMode.current == .snap { try await snap() }
+        if try await waitForKeyboardSourceFrame(since: since) { return }
+        try Task.checkCancellation()
+        DebugLog.write("keyboard frame: no post-reply capture within the short source-menu window")
+        throw BlindError(reason: "無法確認輸入來源切換後的新畫面，未輸入文字。")
     }
 
     /// A bounded fast path, separately exercised with stale and changing frames.
     /// Never substitute arrival time or a healthy transport for capture freshness.
     func waitForKeyboardSourceFrame(since: Double, timeout: Double = 1.2) async throws -> Bool {
         let deadline = now() + timeout
-        let readyAfter = since + 0.2
         repeat {
             try Task.checkCancellation()
-            if live, capturedAt >= readyAfter,
+            if live, capturedAt > since,
                !localActive || (localVerifiedAt > now() - 2 && decodedBoardMs == localLatestMs) { return true }
             if now() >= deadline { return false }
             try await Task.sleep(nanoseconds: 20_000_000)

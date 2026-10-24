@@ -216,7 +216,70 @@ import XCTest
         XCTAssertTrue(device.sent.isEmpty) // The fast wait itself must not move/click/type.
     }
 
-    func testKeyboardFastWaitRequiresAnimationMarginButNotWholeScreenQuiet() async throws {
+    func testKeyboardFastWaitRejectsAFrameCapturedAtTheHIDReply() async throws {
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+        let ready = try await feed.waitForKeyboardSourceFrame(since: feed.capturedAt, timeout: 0.06)
+        XCTAssertFalse(ready)
+        XCTAssertTrue(device.sent.isEmpty)
+    }
+
+    func testKeyboardSourceAcceptsTheOnlyTransientFrameSoonAfterTheHIDReply() async throws {
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+        let reply = feed.capturedAt - 0.05  // The menu was captured 50 ms after the reply, then stays quiet.
+        try await feed.afterKeyboardSource(since: reply)
+        XCTAssertLessThan(feed.capturedAt, reply + 0.2)
+        XCTAssertTrue(device.sent.isEmpty)
+    }
+
+    func testKeyboardSourceTimeoutReleasesControlWithoutQuietRecoveryOrPointerMoves() async throws {
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+        do {
+            try await EnglishInput.ensure(device: device, observe: {
+                XCTFail("A stale source frame reached OCR")
+                return .english
+            }, changed: { since in
+                try await feed.afterKeyboardSource(since: since)
+            }, log: { _ in })
+            XCTFail("A stale source frame was accepted")
+        } catch { XCTAssertTrue(error is BlindError) }
+        XCTAssertEqual(device.sent, ["source next", "source release"])
+    }
+
+    func testKeyboardSourceSnapModeCapturesDirectlyWithoutQuietRecoveryOrPointerMoves() async throws {
+        let savedMode = UserDefaults.standard.object(forKey: FrameMode.key)
+        let savedFallback = FrameMode.fallback
+        defer {
+            UserDefaults.standard.set(savedMode, forKey: FrameMode.key)
+            FrameMode.fallback = savedFallback
+        }
+        FrameMode.current = .snap
+        let device = FakeDevice()
+        let feed = VideoFeed()
+        feed.device = device; feed.mirroring = true
+        let reply = now()
+        let capture = Task { @MainActor in
+            while !device.sent.contains("snap") {
+                if Task.isCancelled { return }
+                await Task.yield()
+            }
+            feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
+        }
+        defer { capture.cancel() }
+        try await feed.afterKeyboardSource(since: reply)
+        XCTAssertGreaterThan(feed.capturedAt, reply)
+        XCTAssertEqual(device.sent, ["snap"])
+    }
+
+    func testKeyboardFastWaitDoesNotWaitForWholeScreenQuiet() async throws {
         let device = FakeDevice()
         let feed = VideoFeed()
         feed.device = device; feed.mirroring = true
@@ -233,7 +296,7 @@ import XCTest
         defer { updates.cancel() }
         let ready = try await feed.waitForKeyboardSourceFrame(since: began, timeout: 1.2)
         XCTAssertTrue(ready)
-        XCTAssertGreaterThanOrEqual(feed.capturedAt, began + 0.2)
+        XCTAssertGreaterThan(feed.capturedAt, began)
         XCTAssertFalse(updatesFinished) // Continuous cursor frames no longer force a quiet window.
         XCTAssertTrue(device.sent.isEmpty)
     }

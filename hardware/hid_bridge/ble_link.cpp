@@ -17,6 +17,7 @@
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
 #include "clicker_service.h"
+#include "video_link.h"
 
 static_assert(MYNEWT_VAL(MSYS_1_BLOCK_COUNT) == 64 && MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 320,
               "nimble_cfg.h not applied: build with hardware/flash.sh");
@@ -191,7 +192,8 @@ class CharCb : public NimBLECharacteristicCallbacks {
       }
       String reply = id + " ok {\"url\":\"http://" + net_ip() +
                 "\",\"token\":\"" + controller_token() + "\"}";
-      chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle());
+      if (chars[CH_REPLY]->notify(reinterpret_cast<const uint8_t *>(reply.c_str()), reply.length(), ci.getConnHandle()))
+        video_request_keyframe();  // Wi-Fi startup can catch a fresh IDR instead of replaying an old GOP.
       return;
     }
     // Versioned commands can carry credentials and certificates. Require the same

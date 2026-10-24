@@ -101,47 +101,71 @@ enum EnglishInput {
         return false
     }
 
-    static func classify(_ words: [Word], image: CGImage, hardwareSource: Bool = false) -> Layout {
+    static func classify(_ words: [Word], image: CGImage, hardwareSource: Bool = false,
+                         sourceDiagnostic: ((String) -> Void)? = nil) -> Layout {
         // Ctrl-Space lists every language. "English" in that list does not mean
         // it is selected; compare backgrounds beside the option labels.
-        let labels = ["english", "注音", "手寫", "日本語", "表情符號", "emoji"]
+        let labels = ["english", "英文(", "英文（", "注音", "手寫", "日本語", "表情符號", "emoji"]
         let options = words.filter { word in
             word.box.midX > 0.25 && word.box.midX < 0.75 && word.box.midY > 0.25 && word.box.midY < 0.8 &&
-            labels.contains(where: { word.text.lowercased().contains($0) })
+            (word.text == "英文" || labels.contains(where: { word.text.lowercased().contains($0) }))
         }
         if !options.isEmpty {
             let gray = Vision.gray(image, image.width, image.height)
+            func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+            let font = median(options.map { $0.box.height })
+            let pixelFont = font * Double(image.height)
+            // Every selection pill has the same width, including short Chinese
+            // labels. Anchor both margins to the English label when available;
+            // a short selected label's own right edge is still inside the pill.
+            let english = options.filter { $0.text.lowercased().contains("english") }
+            let anchors = english.isEmpty ? options : english
+            let left = median(anchors.map { $0.box.minX })
+            let right = anchors.map { $0.box.maxX }.max()!
+            let horizontalFont = pixelFont / Double(image.width)
+            var rowYs: [Double] = []
+            for y in options.map({ $0.box.midY }).sorted() {
+                if rowYs.last.map({ y - $0 > font * 0.6 }) ?? true { rowYs.append(y) }
+            }
+            let gaps = zip(rowYs.dropFirst(), rowYs).map { $0.0 - $0.1 }.filter { $0 > font * 1.25 && $0 < font * 3.5 }
+            let step = gaps.isEmpty ? font * 1.85 : median(gaps)
+            let radiusX = max(1, Int(pixelFont * 0.08)), radiusY = max(1, Int(pixelFont * 0.12))
             func background(_ x: Double, _ y: Double) -> Double {
                 let cx = Int(x * Double(gray.w)), cy = Int((1 - y) * Double(gray.h))
+                let x0 = max(0, cx - radiusX), x1 = min(gray.w, cx + radiusX + 1)
+                let y0 = max(0, cy - radiusY), y1 = min(gray.h, cy + radiusY + 1)
+                guard x0 < x1, y0 < y1 else { return 0 }
                 var total = 0, count = 0
-                for row in max(0, cy - 3)..<min(gray.h, cy + 4) {
-                    for col in max(0, cx - 2)..<min(gray.w, cx + 3) { total += Int(gray.px[row * gray.w + col]); count += 1 }
+                for row in y0..<y1 {
+                    for col in x0..<x1 { total += Int(gray.px[row * gray.w + col]); count += 1 }
                 }
                 return Double(total) / Double(max(count, 1))
             }
-            // A translucent menu can be brighter near its bottom even when that
-            // row is not selected. Require the rounded selection pill's two
-            // horizontal edges and a vertical peak at one of those margins.
-            // Scale by the font's pixel height so this works at any size.
+            func edge(_ side: Double, _ y: Double) -> Double {
+                let x = side < 0 ? left : right
+                return background(x + side * horizontalFont * 0.3, y) -
+                    background(x + side * horizontalFont * 0.75, y)
+            }
+            // Live translucent pills can have only 10 gray levels of contrast.
+            // Normalize each margin against the same margin on adjacent rows:
+            // wallpaper brightness and the menu's own edge cannot select a row.
+            // Both pill edges and one local contrast peak must clear JPEG noise.
             let selected = options.filter { word in
-                let step = word.box.height * 1.85
-                let textHeight = word.box.height * Double(image.height) / Double(image.width)
-                var verticalPeak = false
-                let edges = [-1.0, 1.0].allSatisfy { side in
-                    let edge = side < 0 ? word.box.minX : word.box.maxX
-                    let x = edge + side * textHeight * 0.3
-                    let value = background(x, word.box.midY)
-                    if value > background(x, word.box.midY + step) + 12 &&
-                       value > background(x, word.box.midY - step) + 12 { verticalPeak = true }
-                    return value > background(edge + side * textHeight * 0.7, word.box.midY) + 12
+                let contrasts = [-1.0, 1.0].map { side in edge(side, word.box.midY) }
+                let peaks = [-1.0, 1.0].enumerated().map { index, side in
+                    contrasts[index] - max(edge(side, word.box.midY + step), edge(side, word.box.midY - step))
                 }
-                return edges && verticalPeak
+                let score = min(contrasts.min()!, peaks.max()!)
+                sourceDiagnostic?(String(format: "menu %@ box %.3f,%.3f,%.3f,%.3f score %.1f",
+                                         String(describing: layout([word.text])), word.box.minX, word.box.minY,
+                                         word.box.width, word.box.height, score))
+                return score > 6
             }
             guard let first = selected.first,
                   selected.allSatisfy({ abs($0.box.midY - first.box.midY) < 0.015 }) else { return .unknown }
             return layout(selected.map { $0.text })
         }
-        if hardwareSource { return .unknown }
+        if hardwareSource { sourceDiagnostic?("menu: no recognized source options"); return .unknown }
         if qwertyGrid(words, aspect: Double(image.width) / Double(image.height)) { return .english }
         return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
@@ -194,7 +218,8 @@ enum EnglishInput {
                 }
                 summary?("\(hardwareSource ? "source" : "full") \(recognitionImage.width)x\(recognitionImage.height), accurate, \(words.count) observations")
                 diagnostic?(words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
-                let first = classify(words, image: image, hardwareSource: hardwareSource)
+                let first = classify(words, image: image, hardwareSource: hardwareSource,
+                                     sourceDiagnostic: hardwareSource ? summary : nil)
                 if first != .unknown { return first }
                 // Chinese input-source labels and the small 注 space-bar hint
                 // can disappear when English has recognition priority. The
@@ -208,7 +233,8 @@ enum EnglishInput {
                     }
                 }
                 diagnostic?("Chinese pass: " + words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
-                return classify(words, image: image, hardwareSource: hardwareSource)
+                return classify(words, image: image, hardwareSource: hardwareSource,
+                                sourceDiagnostic: hardwareSource ? summary : nil)
             } catch {
                 diagnostic?("OCR failed: \(error)")
                 let ns = error as NSError
@@ -230,6 +256,12 @@ enum EnglishInput {
                 let began = now()
                 try await device.send("source next")
                 let sent = now() // A capture during command delivery can still show the old choice.
+                // On the physical phone the selector starts appearing roughly
+                // 300 ms after acknowledgement. The first post-reply frame can
+                // still show the previous row or the underlying app. Let the
+                // menu render while video continues decoding, then inspect the
+                // newest frame without excluding an earlier valid capture.
+                try await Task.sleep(nanoseconds: 300_000_000)
                 do { try await changed(sent) }
                 catch is BlindError {
                     try Task.checkCancellation()

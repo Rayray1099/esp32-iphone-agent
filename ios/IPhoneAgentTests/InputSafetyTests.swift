@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import IPhoneAgent
 
 @MainActor final class InputSafetyTests: XCTestCase {
@@ -97,6 +98,86 @@ import XCTest
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
         let actual = await EnglishInput.read(try Data(contentsOf: url), hardwareSource: true)
         XCTAssertEqual(actual, .english)
+    }
+
+    // Synthetic, content-free fixtures reproduce the live 440x956 menu's
+    // common 162px pill and its measured 10-11-level contrast. The app content
+    // underneath the real translucent selector is deliberately not retained.
+    private func sourceMenuWords() -> [EnglishInput.Word] {
+        ["繁體注音", "繁體手寫", "English (US)", "表情符號", "日本語手書き"].enumerated().map { row, text in
+            EnglishInput.Word(text: text, box: CGRect(x: 154.0 / 440, y: 1 - Double(391 + row * 50) / 956,
+                                                       width: Double(row == 2 || row == 4 ? 132 : 88) / 440,
+                                                       height: 26.0 / 956))
+        }
+    }
+
+    private func sourceMenuFixture(selectedRows: [Int], opacity: Double = 1, scale: Int = 1) throws -> CGImage {
+        let width = 440 * scale, height = 956 * scale
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let px = Double(x) / Double(scale), py = Double(y) / Double(scale)
+                // A translucent vertical gradient, including bright wallpaper
+                // behind the unselected Japanese row of the physical fixture.
+                var gray = 24.0
+                if px >= 129 && px < 311 && py >= 343 && py < 613 {
+                    gray = 67 + (py - 343) * 0.025 + max(0, py - 550) * 0.4
+                    for row in selectedRows {
+                        let dx = max(164 - px, max(0, px - 276)), dy = py - Double(378 + row * 50)
+                        if dx * dx + dy * dy < 625 { gray += 11 * opacity }
+                    }
+                }
+                let value = UInt8(gray.rounded())
+                let i = (y * width + x) * 4
+                pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value
+            }
+        }
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(pixels) as CFData))
+        return try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                    bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    }
+
+    func testLowContrastEnglishPillIsRecognizedOnLiveMenuGeometry() throws {
+        for scale in [1, 2] {
+            XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [2], scale: scale),
+                                                hardwareSource: true), .english)
+        }
+        var localized = sourceMenuWords()
+        var shortLabel = localized[2].box
+        shortLabel.size.width = 96.0 / 440
+        localized[2] = .init(text: "英文（美國）", box: shortLabel)
+        XCTAssertEqual(EnglishInput.classify(localized, image: try sourceMenuFixture(selectedRows: [2]), hardwareSource: true), .english)
+    }
+
+    func testShortChineseLabelsUseTheCommonPillMargins() throws {
+        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [0]), hardwareSource: true), .zhuyin)
+        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [1]), hardwareSource: true), .other)
+        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [3]), hardwareSource: true), .other)
+    }
+
+    func testFadingOrAbsentPillNeverConfirmsEnglish() throws {
+        for opacity in [0.0, 0.25, 0.5] {
+            XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [2], opacity: opacity),
+                                                hardwareSource: true), .unknown)
+        }
+        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: []), hardwareSource: true), .unknown)
+    }
+
+    func testTwoHighlightedSourceRowsRemainAmbiguous() throws {
+        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [1, 2]),
+                                            hardwareSource: true), .unknown)
+    }
+
+    func testSourceDiagnosticsIncludeOnlyLayoutsGeometryAndScores() throws {
+        var messages: [String] = []
+        let privateText = EnglishInput.Word(text: "private underlying app content", box: CGRect(x: 0.3, y: 0.7, width: 0.4, height: 0.03))
+        _ = EnglishInput.classify(sourceMenuWords() + [privateText], image: try sourceMenuFixture(selectedRows: [2]), hardwareSource: true,
+                                  sourceDiagnostic: { messages.append($0) })
+        XCTAssertEqual(messages.count, 5)
+        XCTAssertTrue(messages.contains(where: { $0.contains("menu english box") && $0.contains("score") }))
+        XCTAssertFalse(messages.contains(where: { $0.contains(privateText.text) || $0.contains("English (US)") || $0.contains("繁體") }))
     }
 
     func testUnknownKeyboardCyclesToConfirmedEnglishWithoutTypingProbeText() async throws {
@@ -278,6 +359,35 @@ import XCTest
         for (cutoff, reply) in zip(cutoffs, device.repliedAt) { XCTAssertGreaterThanOrEqual(cutoff, reply) }
     }
 
+    func testSourceObservationWaitsForMenuRenderingWithoutDiscardingItsFirstCapture() async throws {
+        let device = SourceTimingDevice()
+        var checks = 0
+        try await EnglishInput.ensure(device: device, observe: { .english }, changed: { cutoff in
+            checks += 1
+            let replied = try XCTUnwrap(device.repliedAt.last)
+            XCTAssertGreaterThanOrEqual(cutoff, replied)
+            XCTAssertLessThan(cutoff - replied, 0.05) // Keep the actual reply as the capture cutoff.
+            if checks == 1 { XCTAssertGreaterThanOrEqual(now() - replied, 0.28) }
+        }, log: { _ in })
+        XCTAssertEqual(checks, 2)
+        XCTAssertEqual(device.sent, ["source next", "source release"])
+    }
+
+    func testCancellationDuringMenuRenderingReleasesControlBeforeObservation() async throws {
+        let device = FakeDevice()
+        let selection = Task {
+            try await EnglishInput.ensure(device: device, observe: {
+                XCTFail("Cancelled menu render reached OCR")
+                return .english
+            }, changed: { _ in XCTFail("Cancelled menu render checked freshness") }, log: { _ in })
+        }
+        while device.sent.isEmpty { await Task.yield() }
+        selection.cancel()
+        do { try await selection.value; XCTFail("Cancelled menu render succeeded") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(device.sent, ["source next", "source release"])
+    }
+
     func testKeyboardFastWaitRejectsAFrameCapturedBeforeTheSourceChange() async throws {
         let device = FakeDevice()
         let feed = VideoFeed()
@@ -419,7 +529,9 @@ import XCTest
 @MainActor private final class SourceTimingDevice: HIDDevice {
     let links = 1, connected = true
     var repliedAt: [Double] = []
+    var sent: [String] = []
     func send(_ command: String) async throws -> String {
+        sent.append(command)
         try await Task.sleep(nanoseconds: 20_000_000)
         repliedAt.append(now())
         return "ok"

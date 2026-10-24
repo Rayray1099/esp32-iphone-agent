@@ -1,6 +1,13 @@
-# Decoder fixtures
+# Regression fixtures
 
-All fixtures are synthetic and contain no phone screenshots.
+Decoder fixtures below are synthetic. The three JPEGs contain only cropped
+keyboard keys or an input-source menu from an authorized physical test. All
+surrounding phone content is replaced with a solid background.
+
+- english-keyboard.jpg: grouped QWERTY letters in an iOS keyboard.
+- zhuyin-keyboard.jpg: glyph OCR ambiguity plus the small 注 space-bar label.
+- english-source-menu.jpg: every language is listed; only English is selected.
+  This catches accepting an unselected English label in a language menu.
 
 - tiny.h264: one 32 x 32 picture, for CPU decoding and timestamp checks.
 - interframes.h264: 120 High-profile pictures, for sustained flush ownership.

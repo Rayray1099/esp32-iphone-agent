@@ -14,10 +14,11 @@ enum EnglishInput {
         if text.contains("english") || text.contains("英文") || text.contains("qwerty") { return .english }
         // Vision often groups a row into one observation, e.g. "q w e r t y".
         let rows = words.map { $0.lowercased().filter { !$0.isWhitespace } }
-        let keys = Set(rows.filter { $0.count <= 12 }.joined())
-        if keys.intersection(Set("qwertyuiop")).count >= 6 { return .english }
-        // The space-bar label survives when individual Zhuyin glyphs become kana.
+        let keys = Set(rows.filter { row in
+            row.count == 1 || ["qwert", "asdfg", "zxcvb"].contains(where: row.contains)
+        }.joined())
         if words.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "注" }) { return .zhuyin }
+        if keys.intersection(Set("qwertyuiop")).count >= 6 { return .english }
         return .unknown
     }
 
@@ -48,10 +49,14 @@ enum EnglishInput {
         return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
 
-    static func read(_ jpeg: Data) async -> Layout {
+    static func read(_ jpeg: Data, diagnostic: ((String) -> Void)? = nil) async -> Layout {
         await Task.detached(priority: .userInitiated) {
             guard let image = Vision.image(jpeg) else { return Layout.unknown }
             let request = VNRecognizeTextRequest()
+            #if targetEnvironment(simulator)
+            request.usesCPUOnly = true // Hosted simulators have no usable Neural Engine.
+            #endif
+            request.revision = VNRecognizeTextRequestRevision3
             request.recognitionLevel = .accurate
             request.recognitionLanguages = ["en-US", "zh-Hant"]
             request.usesLanguageCorrection = false
@@ -59,10 +64,15 @@ enum EnglishInput {
             request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 0.8)
             do {
                 try VNImageRequestHandler(cgImage: image).perform([request])
-                return classify((request.results ?? []).compactMap { r in
+                let words = (request.results ?? []).compactMap { r in
                     r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
-                }, image: image)
-            } catch { return .unknown }
+                }
+                diagnostic?(words.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
+                return classify(words, image: image)
+            } catch {
+                diagnostic?("OCR failed: \(error)")
+                return .unknown
+            }
         }.value
     }
 

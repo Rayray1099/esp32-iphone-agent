@@ -6,6 +6,11 @@ import UIKit
 final class ShareTests: XCTestCase {
     let redactor = Redactor(secrets: ["sk-test-secret-123", "https://llm.example.com/v1", "llm.example.com", "AgentNet-7C3E", "hunter22"])
 
+    func testSpotlightQueriesAreRedactedLikeTypedText() {
+        XCTAssertEqual(redactor.text("DO: search Private Query"), "DO: search •••")
+        XCTAssertFalse(redactor.jsonLine(#"{"action":"search","text":"Private Query"}"#).contains("Private Query"))
+    }
+
     func testTextLosesSecretsIPsAndTypedText() {
         let line = "POST https://llm.example.com/v1 key sk-test-secret-123 on AgentNet-7C3E (hunter22) at 192.168.4.1"
         XCTAssertEqual(redactor.text(line), "POST [redacted] key [redacted] on [redacted] ([redacted]) at [redacted]")

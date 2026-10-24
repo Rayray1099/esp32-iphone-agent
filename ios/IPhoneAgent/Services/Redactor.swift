@@ -11,8 +11,8 @@ struct Redactor {
 
     private static let rules: [(String, String)] = [
         (#"\b(?:\d{1,3}\.){3}\d{1,3}\b"#, mask),                                      // IPv4
-        (#"("action": ?"type", ?"text": ?)"(?:[^"\\]|\\.)*""#, "$1\"\(typed)\""),     // history in prompts
-        (#"(DO: type) [^\n]*"#, "$1 \(typed)"),                                         // model replies
+        (#"("action": ?"(?:type|search)", ?"text": ?)"(?:[^"\\]|\\.)*""#, "$1\"\(typed)\""),
+        (#"(DO: (?:type|search)) [^\n]*"#, "$1 \(typed)"),                              // model replies
         (#"(cmd #\d+ type) .*?( →|$)"#, "$1 \(typed)$2"),                              // debug.log commands
     ]
 
@@ -43,7 +43,7 @@ struct Redactor {
         case let a as [Any]: return a.map(value)
         case var d as [String: Any]:
             for (k, x) in d { d[k] = value(x) }
-            if d["action"] as? String == "type", d["text"] != nil { d["text"] = Self.typed }
+            if ["type", "search"].contains(d["action"] as? String ?? ""), d["text"] != nil { d["text"] = Self.typed }
             return d
         default: return v
         }

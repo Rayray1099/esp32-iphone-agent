@@ -17,6 +17,8 @@ import XCTest
         XCTAssertEqual(EnglishInput.layout(["Q", "W", "E", "R", "T", "Y"]), .english)
         XCTAssertEqual(EnglishInput.layout(["q w e r t y u i o p"]), .english)
         XCTAssertEqual(EnglishInput.layout(["注"]), .zhuyin)
+        XCTAssertEqual(EnglishInput.layout(["is you and just I'm good s", "注"]), .zhuyin)
+        XCTAssertEqual(EnglishInput.layout(["you", "are", "quite", "right"]), .unknown)
         XCTAssertEqual(EnglishInput.layout(["繁體手寫"]), .other)
         XCTAssertEqual(EnglishInput.layout(["搜尋", "ㄅ"]), .unknown)
         XCTAssertEqual(EnglishInput.layout([]), .unknown)
@@ -27,7 +29,7 @@ import XCTest
         for (name, expected) in [("english-keyboard", EnglishInput.Layout.english),
                                  ("zhuyin-keyboard", .zhuyin), ("english-source-menu", .english)] {
             let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "jpg"))
-            let actual = await EnglishInput.read(try Data(contentsOf: url))
+            let actual = await EnglishInput.read(try Data(contentsOf: url), diagnostic: { print("OCR fixture \(name): \($0)") })
             XCTAssertEqual(actual, expected, name)
         }
     }
@@ -77,6 +79,16 @@ import XCTest
         XCTAssertEqual(phone.calls, ["search"])
         XCTAssertEqual(actor.prompts.count, 1)
         XCTAssertEqual(try Actions.parseCommand("search Weather")["text"], .str("Weather"))
+    }
+
+    func testActualPointerSearchOrdersFocusClearAndTypeWithoutSubmitting() async throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-keyboard", withExtension: "jpg"))
+        let screen = FakeScreen()
+        screen.frame = try Data(contentsOf: url)
+        let device = FakeDevice()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), screen: screen)
+        try await pointer.search("Weather")
+        XCTAssertEqual(device.sent, ["key cmd+space", "key cmd+a", "key backspace", "type Weather"])
     }
 
     func testSmallTargetUsesEachScreenAxisInPoints() {

@@ -65,8 +65,9 @@ extension AppModel {
                 try await feed.stream(true)
                 _ = try await feed.currentFrame()
                 guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
+                let searchAt = now()
                 try await pointer.search(query)
-                try await feed.afterAction(since: now())
+                try await feed.afterAction(since: searchAt)
                 say(String(format: "input test: search sent and fresh screen verified in %.2f s", now() - began))
             } catch { say("input test failed: " + error.localizedDescription) }
             if claimed { _ = try? await board.commands.send("v1 POST input/release {}") }

@@ -87,13 +87,14 @@ enum EnglishInput {
         return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
 
-    static func read(_ jpeg: Data, diagnostic: ((String) -> Void)? = nil) async -> Layout {
+    static func read(_ jpeg: Data, diagnostic: ((String) -> Void)? = nil, failure: ((String) -> Void)? = nil) async -> Layout {
         await Task.detached(priority: .userInitiated) {
             guard let image = Vision.image(jpeg) else { return Layout.unknown }
             let request = VNRecognizeTextRequest()
-            #if targetEnvironment(simulator)
-            request.usesCPUOnly = true // Hosted simulators have no usable Neural Engine.
-            #endif
+            // The agent types with its own app in the background. GPU Vision
+            // requests can be denied there, even when the same test passes in
+            // the foreground or on a simulator. Match our CPU video decoder.
+            request.usesCPUOnly = true
             request.revision = VNRecognizeTextRequestRevision3
             request.recognitionLevel = .accurate
             request.recognitionLanguages = ["en-US", "zh-Hant"]
@@ -121,6 +122,8 @@ enum EnglishInput {
                 return classify(words, image: image)
             } catch {
                 diagnostic?("OCR failed: \(error)")
+                let ns = error as NSError
+                failure?("keyboard OCR unavailable: \(ns.domain) (\(ns.code))")
                 return .unknown
             }
         }.value
@@ -149,7 +152,12 @@ enum EnglishInput {
     @MainActor static func ensure(screen: ScreenSource, device: HIDDevice, log: (String) -> Void) async throws {
         try await ensure(device: device, observe: {
             guard screen.live, let frame = screen.frame else { throw BlindError() }
-            return await read(frame)
+            let began = now()
+            var issue: String?
+            let result = await read(frame, failure: { issue = $0 })
+            if let issue { throw DeviceError(message: issue + "；未輸入文字。") }
+            log(String(format: "keyboard: %@ (%.0f ms)", String(describing: result), (now() - began) * 1000))
+            return result
         }, changed: { sent in
             try await screen.afterAction(since: sent)
         }, log: log)

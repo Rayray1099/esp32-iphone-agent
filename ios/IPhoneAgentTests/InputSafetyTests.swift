@@ -26,13 +26,25 @@ import XCTest
 
     func testKeyboardOCRFromCroppedPhysicalPhoneFixtures() async throws {
         let bundle = Bundle(for: Self.self)
-        for name in ["english-keyboard", "zhuyin-keyboard", "english-source-menu"] {
+        for name in ["english-keyboard", "mirrored-english-keyboard", "zhuyin-keyboard", "english-source-menu"] {
             let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "jpg"))
             let actual = await EnglishInput.read(try Data(contentsOf: url), diagnostic: { print("OCR fixture \(name): \($0)") })
             // Ambiguous Bopomofo key caps must never be accepted as English.
             if name == "zhuyin-keyboard" { XCTAssertNotEqual(actual, .english, name) }
             else { XCTAssertEqual(actual, .english, name) }
         }
+    }
+
+    func testMirroredKeyboardCropKeepsKeyPixelsAndMapsBackToFullFrame() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "mirrored-english-keyboard", withExtension: "jpg"))
+        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
+        let crop = try XCTUnwrap(EnglishInput.keyboardImage(image))
+        XCTAssertEqual(crop.image.width, 440)
+        XCTAssertEqual(Double(crop.image.height) / Double(crop.image.width), Double(image.height) * crop.fraction / Double(image.width), accuracy: 0.003)
+        XCTAssertEqual(crop.fraction, 0.45, accuracy: 0.001)
+        // The bottom of both images remains the same coordinate origin.
+        let gray = Vision.gray(crop.image, 44, 90)
+        XCTAssertGreaterThan(Set(gray.px).count, 40)
     }
 
     func testSparseRealKeyObservationsFitStaggeredQwertyRows() {

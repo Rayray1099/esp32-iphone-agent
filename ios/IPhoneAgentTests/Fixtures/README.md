@@ -5,6 +5,9 @@ keyboard keys or an input-source menu from an authorized physical test. All
 surrounding phone content is replaced with a solid background.
 
 - english-keyboard.jpg: grouped QWERTY letters in an iOS keyboard.
+- mirrored-english-keyboard.jpg: actual 718 x 1560 AirPlay keyboard, with
+  everything above the keyboard replaced by a solid background. This exercises
+  the keyboard crop and scale used by the background agent.
 - zhuyin-keyboard.jpg: glyph OCR ambiguity plus the small 注 space-bar label.
 - english-source-menu.jpg: every language is listed; only English is selected.
   This catches accepting an unselected English label in a language menu.

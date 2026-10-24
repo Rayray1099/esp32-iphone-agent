@@ -1,10 +1,27 @@
 import Foundation
 import Vision
+import CoreGraphics
 
 /// On-device keyboard OCR. Unknown input sources must not silently accept ASCII keystrokes.
 enum EnglishInput {
     enum Layout: Equatable { case english, zhuyin, other, unknown }
     struct Word { let text: String; let box: CGRect } // Vision coordinates, origin bottom left
+
+    /// Crop pixels, not Vision's ROI: its returned boxes are ROI-relative. A
+    /// keyboard-only pass also avoids the recognizer spending time on app icons
+    /// and missing small isolated key caps in a full mirrored frame.
+    static func keyboardImage(_ image: CGImage) -> (image: CGImage, fraction: Double)? {
+        let height = Int((Double(image.height) * 0.45).rounded())
+        guard let crop = image.cropping(to: CGRect(x: 0, y: image.height - height, width: image.width, height: height)) else { return nil }
+        let width = min(440, crop.width)
+        let scaledHeight = Int((Double(crop.height) * Double(width) / Double(crop.width)).rounded())
+        guard let context = CGContext(data: nil, width: width, height: scaledHeight, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: scaledHeight))
+        guard let scaled = context.makeImage() else { return nil }
+        return (scaled, Double(height) / Double(image.height))
+    }
 
     static func layout(_ words: [String]) -> Layout {
         let text = words.joined(separator: " ").lowercased()
@@ -87,7 +104,7 @@ enum EnglishInput {
         return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
 
-    static func read(_ jpeg: Data, diagnostic: ((String) -> Void)? = nil, failure: ((String) -> Void)? = nil) async -> Layout {
+    static func read(_ jpeg: Data, diagnostic: ((String) -> Void)? = nil, failure: ((String) -> Void)? = nil, summary: ((String) -> Void)? = nil) async -> Layout {
         await Task.detached(priority: .userInitiated) {
             guard let image = Vision.image(jpeg) else { return Layout.unknown }
             let request = VNRecognizeTextRequest()
@@ -103,6 +120,27 @@ enum EnglishInput {
             // Full image coordinates keep key positions and menu pixel samples
             // in the same space. Vision's ROI boxes are relative to the ROI.
             do {
+                if let crop = keyboardImage(image) {
+                    request.minimumTextHeight = 0.018
+                    request.recognitionLanguages = ["en-US"]
+                    for level in [VNRequestTextRecognitionLevel.fast, .accurate] {
+                        request.recognitionLevel = level
+                        try VNImageRequestHandler(cgImage: crop.image).perform([request])
+                        let keys = (request.results ?? []).compactMap { r -> Word? in
+                            guard let text = r.topCandidates(1).first?.string else { return nil }
+                            var box = r.boundingBox
+                            box.origin.y *= crop.fraction; box.size.height *= crop.fraction
+                            return Word(text: text, box: box)
+                        }
+                        diagnostic?("Keyboard crop: " + keys.map { "\($0.text) @ \($0.box)" }.joined(separator: "; "))
+                        let layout = classify(keys, image: image)
+                        summary?("crop \(image.width)x\(image.height), \(level == .fast ? "fast" : "accurate"), \(keys.count) observations, grid \(qwertyGrid(keys, aspect: Double(image.width) / Double(image.height)))")
+                        if layout != .unknown { return layout }
+                    }
+                }
+                request.recognitionLevel = .accurate
+                request.recognitionLanguages = ["en-US", "zh-Hant"]
+                request.minimumTextHeight = 0.008
                 try VNImageRequestHandler(cgImage: image).perform([request])
                 var words = (request.results ?? []).compactMap { r in
                     r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
@@ -154,7 +192,7 @@ enum EnglishInput {
             guard screen.live, let frame = screen.frame else { throw BlindError() }
             let began = now()
             var issue: String?
-            let result = await read(frame, failure: { issue = $0 })
+            let result = await read(frame, failure: { issue = $0 }, summary: { log("keyboard OCR: " + $0) })
             if let issue { throw DeviceError(message: issue + "；未輸入文字。") }
             log(String(format: "keyboard: %@ (%.0f ms)", String(describing: result), (now() - began) * 1000))
             return result

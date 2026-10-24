@@ -11,215 +11,33 @@ import CoreGraphics
         XCTAssertTrue(CommandChannel.canReplay("snap"))
     }
 
-    func testKeyboardRecognitionDoesNotMistakeOneZhuyinCharacterForALayout() {
-        XCTAssertEqual(EnglishInput.layout(["ㄅ ㄉ ㄓ ㄚ", "空白"]), .zhuyin)
-        XCTAssertEqual(EnglishInput.layout(["注音"]), .zhuyin)
-        XCTAssertEqual(EnglishInput.layout(["English (US)"]), .english)
-        XCTAssertEqual(EnglishInput.layout(["Q", "W", "E", "R", "T", "Y"]), .english)
-        XCTAssertEqual(EnglishInput.layout(["q w e r t y u i o p"]), .english)
-        XCTAssertEqual(EnglishInput.layout(["注"]), .zhuyin)
-        XCTAssertEqual(EnglishInput.layout(["is you and just I'm good s", "注"]), .zhuyin)
-        XCTAssertEqual(EnglishInput.layout(["you", "are", "quite", "right"]), .unknown)
-        XCTAssertEqual(EnglishInput.layout(["繁體手寫"]), .other)
-        XCTAssertEqual(EnglishInput.layout(["搜尋", "ㄅ"]), .unknown)
-        XCTAssertEqual(EnglishInput.layout([]), .unknown)
-    }
-
-    func testKeyboardOCRFromCroppedPhysicalPhoneFixtures() async throws {
-        let bundle = Bundle(for: Self.self)
-        for name in ["english-keyboard", "mirrored-english-keyboard", "zhuyin-keyboard", "english-source-menu"] {
-            let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "jpg"))
-            let actual = await EnglishInput.read(try Data(contentsOf: url), diagnostic: { print("OCR fixture \(name): \($0)") })
-            // Ambiguous Bopomofo key caps must never be accepted as English.
-            if name == "zhuyin-keyboard" { XCTAssertNotEqual(actual, .english, name) }
-            else { XCTAssertEqual(actual, .english, name) }
-        }
-    }
-
-    func testMirroredKeyboardCropKeepsKeyPixelsAndMapsBackToFullFrame() throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "mirrored-english-keyboard", withExtension: "jpg"))
-        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
-        let crop = try XCTUnwrap(EnglishInput.keyboardImage(image))
-        XCTAssertEqual(crop.image.width, 440)
-        XCTAssertEqual(Double(crop.image.height) / Double(crop.image.width), Double(image.height) * crop.fraction / Double(image.width), accuracy: 0.003)
-        XCTAssertEqual(crop.fraction, 0.45, accuracy: 0.001)
-        // The bottom of both images remains the same coordinate origin.
-        let gray = Vision.gray(crop.image, 44, 90)
-        XCTAssertGreaterThan(Set(gray.px).count, 40)
-    }
-
-    func testSparseRealKeyObservationsFitStaggeredQwertyRows() {
-        let keys: [(String, Double, Double)] = [("w", 0.157, 0.284), ("e", 0.252, 0.284),
-            ("t", 0.452, 0.286), ("a", 0.105, 0.225), ("s", 0.202, 0.225), ("d", 0.300, 0.228),
-            ("h", 0.598, 0.227), ("j", 0.693, 0.225), ("k", 0.793, 0.227),
-            ("x", 0.302, 0.166), ("v", 0.498, 0.166), ("b", 0.595, 0.169), ("n", 0.695, 0.166), ("m", 0.793, 0.166)]
-        let words = keys.map { EnglishInput.Word(text: $0.0, box: CGRect(x: $0.1 - 0.02, y: $0.2 - 0.01, width: 0.04, height: 0.02)) }
-        XCTAssertTrue(EnglishInput.qwertyGrid(words, aspect: 440.0 / 956))
-        XCTAssertFalse(EnglishInput.qwertyGrid(words.map { .init(text: $0.text, box: CGRect(x: $0.box.minX, y: 0.2, width: 0.04, height: 0.02)) }, aspect: 440.0 / 956))
-    }
-
-    func testEnglishMenuLabelRequiresItsOwnHighlight() throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
-        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
-        let selected = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.345, y: 0.484, width: 0.305, height: 0.028))
-        XCTAssertEqual(EnglishInput.classify([selected], image: image), .english)
-        let unselected = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.345, y: 0.589, width: 0.305, height: 0.028))
-        XCTAssertNotEqual(EnglishInput.classify([unselected], image: image), .english)
-    }
-
-    func testBrightTranslucentUnselectedMenuRowIsNotASelection() throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
-        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
-        // The bright wallpaper behind this bottom row used to pass both vertical
-        // comparisons. It has no selection pill edge around its label.
-        let japanese = EnglishInput.Word(text: "日本語手書き", box: CGRect(x: 0.35, y: 0.381, width: 0.32, height: 0.027))
-        XCTAssertEqual(EnglishInput.classify([japanese], image: image, hardwareSource: true), .unknown)
-        let english = EnglishInput.Word(text: "English (US)", box: CGRect(x: 0.3499, y: 0.483, width: 0.3002, height: 0.0298))
-        XCTAssertEqual(EnglishInput.classify([japanese, english], image: image, hardwareSource: true), .english)
-    }
-
-    func testSourceCropMapsMenuLabelsBackToTheirHighlightPixels() throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
-        let image = try XCTUnwrap(Vision.image(Data(contentsOf: url)))
-        let source = try XCTUnwrap(EnglishInput.sourceImage(image))
-        XCTAssertLessThan(source.image.width * source.image.height, image.width * image.height / 2)
-        let selected = CGRect(x: 0.345, y: 0.484, width: 0.305, height: 0.028)
-        let local = EnglishInput.Word(text: "English (US)", box: CGRect(
-            x: (selected.minX - source.box.minX) / source.box.width,
-            y: (selected.minY - source.box.minY) / source.box.height,
-            width: selected.width / source.box.width, height: selected.height / source.box.height))
-        let mapped = source.fullFrame(local)
-        XCTAssertEqual(mapped.box.minX, selected.minX, accuracy: 0.000001)
-        XCTAssertEqual(mapped.box.minY, selected.minY, accuracy: 0.000001)
-        XCTAssertEqual(EnglishInput.classify([mapped], image: image, hardwareSource: true), .english)
-    }
-
-    func testHardwareSourceOCRFromCroppedMenu() async throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
-        let actual = await EnglishInput.read(try Data(contentsOf: url), hardwareSource: true)
-        XCTAssertEqual(actual, .english)
-    }
-
-    // Synthetic, content-free fixtures reproduce the live 440x956 menu's
-    // common 162px pill and its measured 10-11-level contrast. The app content
-    // underneath the real translucent selector is deliberately not retained.
-    private func sourceMenuWords() -> [EnglishInput.Word] {
-        ["繁體注音", "繁體手寫", "English (US)", "表情符號", "日本語手書き"].enumerated().map { row, text in
-            EnglishInput.Word(text: text, box: CGRect(x: 154.0 / 440, y: 1 - Double(391 + row * 50) / 956,
-                                                       width: Double(row == 2 || row == 4 ? 132 : 88) / 440,
-                                                       height: 26.0 / 956))
-        }
-    }
-
-    private func sourceMenuFixture(selectedRows: [Int], opacity: Double = 1, scale: Int = 1) throws -> CGImage {
-        let width = 440 * scale, height = 956 * scale
-        var pixels = [UInt8](repeating: 255, count: width * height * 4)
-        for y in 0..<height {
-            for x in 0..<width {
-                let px = Double(x) / Double(scale), py = Double(y) / Double(scale)
-                // A translucent vertical gradient, including bright wallpaper
-                // behind the unselected Japanese row of the physical fixture.
-                var gray = 24.0
-                if px >= 129 && px < 311 && py >= 343 && py < 613 {
-                    gray = 67 + (py - 343) * 0.025 + max(0, py - 550) * 0.4
-                    for row in selectedRows {
-                        let dx = max(164 - px, max(0, px - 276)), dy = py - Double(378 + row * 50)
-                        if dx * dx + dy * dy < 625 { gray += 11 * opacity }
-                    }
-                }
-                let value = UInt8(gray.rounded())
-                let i = (y * width + x) * 4
-                pixels[i] = value; pixels[i + 1] = value; pixels[i + 2] = value
-            }
-        }
-        let provider = try XCTUnwrap(CGDataProvider(data: Data(pixels) as CFData))
-        return try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                                    bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                                    provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
-    }
-
-    func testLowContrastEnglishPillIsRecognizedOnLiveMenuGeometry() throws {
-        for scale in [1, 2] {
-            XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [2], scale: scale),
-                                                hardwareSource: true), .english)
-        }
-        var localized = sourceMenuWords()
-        var shortLabel = localized[2].box
-        shortLabel.size.width = 96.0 / 440
-        localized[2] = .init(text: "英文（美國）", box: shortLabel)
-        XCTAssertEqual(EnglishInput.classify(localized, image: try sourceMenuFixture(selectedRows: [2]), hardwareSource: true), .english)
-    }
-
-    func testShortChineseLabelsUseTheCommonPillMargins() throws {
-        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [0]), hardwareSource: true), .zhuyin)
-        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [1]), hardwareSource: true), .other)
-        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [3]), hardwareSource: true), .other)
-    }
-
-    func testFadingOrAbsentPillNeverConfirmsEnglish() throws {
-        for opacity in [0.0, 0.25, 0.5] {
-            XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [2], opacity: opacity),
-                                                hardwareSource: true), .unknown)
-        }
-        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: []), hardwareSource: true), .unknown)
-    }
-
-    func testTwoHighlightedSourceRowsRemainAmbiguous() throws {
-        XCTAssertEqual(EnglishInput.classify(sourceMenuWords(), image: try sourceMenuFixture(selectedRows: [1, 2]),
-                                            hardwareSource: true), .unknown)
-    }
-
-    func testSourceDiagnosticsIncludeOnlyLayoutsGeometryAndScores() throws {
+    func testEnglishSourceIsOneEisuKeyWithoutControlSpace() async throws {
+        let device = FakeDevice()
         var messages: [String] = []
-        let privateText = EnglishInput.Word(text: "private underlying app content", box: CGRect(x: 0.3, y: 0.7, width: 0.4, height: 0.03))
-        _ = EnglishInput.classify(sourceMenuWords() + [privateText], image: try sourceMenuFixture(selectedRows: [2]), hardwareSource: true,
-                                  sourceDiagnostic: { messages.append($0) })
-        XCTAssertEqual(messages.count, 5)
-        XCTAssertTrue(messages.contains(where: { $0.contains("menu english box") && $0.contains("score") }))
-        XCTAssertFalse(messages.contains(where: { $0.contains(privateText.text) || $0.contains("English (US)") || $0.contains("繁體") }))
+        try await EnglishInput.ensure(device: device, log: { messages.append($0) })
+        XCTAssertEqual(device.sent, ["key eisu"])
+        XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("source") }))
+        XCTAssertEqual(messages.count, 1)
     }
 
-    func testUnknownKeyboardCyclesToConfirmedEnglishWithoutTypingProbeText() async throws {
-        let device = FakeDevice()
-        var observations: [EnglishInput.Layout] = [.zhuyin, .other, .english]
-        var freshChecks = 0
-        try await EnglishInput.ensure(device: device, observe: { observations.removeFirst() },
-                                      changed: { _ in freshChecks += 1 }, log: { _ in })
-        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 3) + ["source release"])
-        XCTAssertEqual(freshChecks, 4) // three pending choices, then the committed release
-        XCTAssertTrue(observations.isEmpty)
+    func testFirmwareWithoutEisuNeverTypes() async throws {
+        let device = RejectingDevice(reject: "key eisu", reply: "err unknown key")
+        let screen = FakeScreen()  // Pointer holds its screen weakly.
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        do { try await pointer.type("Weather"); XCTFail("Typed without selecting English") }
+        catch { XCTAssertTrue((error as? DeviceError)?.message.contains("韌體") == true, "\(error)") }
+        XCTAssertEqual(device.sent, ["key eisu"])
     }
 
-    func testUnrecognizedKeyboardFailsAfterTwoBoundedCycles() async {
-        let device = FakeDevice()
-        do {
-            try await EnglishInput.ensure(device: device, observe: { .unknown }, changed: { _ in }, log: { _ in })
-            XCTFail("Unknown input source was accepted")
-        } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 12) + ["source release"])
-        XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("type ") }))
-    }
-
-    func testEnglishHardwareSourceAlwaysOpensAndReleasesSelector() async throws {
-        let device = FakeDevice()
-        var checkedCommands: [String] = []
-        try await EnglishInput.ensure(device: device, observe: { .english },
-                                      changed: { _ in checkedCommands.append(device.sent.last!) }, log: { _ in })
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-        XCTAssertEqual(checkedCommands, ["source next", "source release"])
-    }
-
-    func testSelectedEnglishCannotProceedWithoutAFreshReleaseFrame() async {
-        let device = FakeDevice()
-        do {
-            try await EnglishInput.ensure(device: device, observe: { .english }, changed: { _ in
-                if device.sent.last == "source release" { throw BlindError() }
-            }, log: { _ in })
-            XCTFail("A pending English choice was accepted without its committed frame")
-        } catch { XCTAssertTrue(error is BlindError) }
-        XCTAssertEqual(device.sent, ["source next", "source release", "source release"])
-        XCTAssertFalse(device.sent.contains(where: { $0.hasPrefix("type ") }))
+    func testEisuLinkFailureIsReportedAsIsAndNeverTypes() async throws {
+        let device = RejectingDevice(reject: "key eisu", reply: "board not connected")
+        let screen = FakeScreen()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        do { try await pointer.type("Weather"); XCTFail("Typed after a failed source key") }
+        catch { XCTAssertEqual((error as? DeviceError)?.message, "board not connected") }
+        XCTAssertEqual(device.sent, ["key eisu"])
     }
 
     func testMissingMirroredScreenNeverTypes() async throws {
@@ -228,6 +46,15 @@ import CoreGraphics
         do { try await pointer.type("Weather"); XCTFail("Typed without screen") }
         catch { XCTAssertTrue(error is BlindError) }
         XCTAssertTrue(device.sent.isEmpty)
+    }
+
+    func testPointerTypeSelectsEnglishBeforeText() async throws {
+        let device = FakeDevice()
+        let screen = FakeScreen()
+        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                              screen: screen)
+        try await pointer.type("AbC_123!")
+        XCTAssertEqual(device.sent, ["key eisu", "type AbC_123!"])
     }
 
     func testSpotlightSearchIsOneActorActionAndNeverPressesReturn() async throws {
@@ -242,248 +69,11 @@ import CoreGraphics
     }
 
     func testActualPointerSearchOrdersFocusClearAndTypeWithoutSubmitting() async throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
         let screen = FakeScreen()
-        screen.frame = try Data(contentsOf: url)
         let device = FakeDevice()
         let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), screen: screen)
         try await pointer.search("Weather")
-        XCTAssertEqual(device.sent, ["key cmd+space", "source next", "source release", "key cmd+a", "key backspace", "type Weather"])
-    }
-
-    func testQwertyPixelsCannotConfirmTheHardwareSource() async throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-keyboard", withExtension: "jpg"))
-        let actual = await EnglishInput.read(try Data(contentsOf: url), hardwareSource: true)
-        XCTAssertEqual(actual, .unknown)
-    }
-
-    func testMissedFirstSourceFrameCyclesAgainBeforeObservingConfirmedEnglish() async throws {
-        let device = FakeDevice()
-        var checks = 0, observations = 0
-        var messages: [String] = []
-        try await EnglishInput.ensure(device: device, observe: {
-            observations += 1
-            return .english
-        }, changed: { _ in
-            checks += 1
-            if checks == 1 { throw BlindError() }
-        }, log: { messages.append($0) })
-        XCTAssertEqual(device.sent, ["source next", "source next", "source release"])
-        XCTAssertEqual(checks, 3) // Missed menu, fresh menu, then fresh release.
-        XCTAssertEqual(observations, 1)
-        XCTAssertTrue(messages.contains(where: { $0.contains("missed fresh menu frame") }))
-    }
-
-    func testAllMissedSourceFramesAreBoundedWithoutOCRAndReleaseControl() async {
-        let device = FakeDevice()
-        var observations = 0
-        do {
-            try await EnglishInput.ensure(device: device, observe: {
-                observations += 1
-                return .english
-            }, changed: { _ in throw BlindError() }, log: { _ in })
-            XCTFail("Missing frame was accepted")
-        } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(observations, 0)
-        XCTAssertEqual(device.sent, Array(repeating: "source next", count: 12) + ["source release"])
-    }
-
-    func testSourceFrameCancellationIsNotRetried() async {
-        let device = FakeDevice()
-        let selection = Task {
-            try await EnglishInput.ensure(device: device, observe: {
-                XCTFail("Cancelled selection reached OCR")
-                return .english
-            }, changed: { _ in
-                withUnsafeCurrentTask { $0?.cancel() }
-                throw BlindError()
-            }, log: { _ in })
-        }
-        do { try await selection.value; XCTFail("Cancelled selection succeeded") }
-        catch { XCTAssertTrue(error is CancellationError) }
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-    }
-
-    func testSourceFrameDeviceErrorIsNotRetried() async {
-        let device = FakeDevice()
-        do {
-            try await EnglishInput.ensure(device: device, observe: {
-                XCTFail("Failed source capture reached OCR")
-                return .english
-            }, changed: { _ in throw DeviceError(message: "capture device failed") }, log: { _ in })
-            XCTFail("Device failure was accepted")
-        } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-    }
-
-    func testSourceCommandFailureIsNotRetried() async {
-        @MainActor final class FailingSourceDevice: HIDDevice {
-            let links = 1, connected = true
-            var sent: [String] = []
-            func waitConnected(_ timeout: TimeInterval) async -> Bool { true }
-            func send(_ command: String) async throws -> String {
-                sent.append(command)
-                if command == "source next" { throw DeviceError(message: "HID submission failed") }
-                return "ok"
-            }
-        }
-        let device = FailingSourceDevice()
-        do {
-            try await EnglishInput.ensure(device: device, observe: {
-                XCTFail("Failed HID command reached OCR")
-                return .english
-            }, changed: { _ in XCTFail("Failed HID command checked freshness") }, log: { _ in })
-            XCTFail("Failed HID command was accepted")
-        } catch { XCTAssertTrue(error is DeviceError) }
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-    }
-
-    func testSearchUsesSourceFreshnessOnlyForSelectorAndRelease() async throws {
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "english-source-menu", withExtension: "jpg"))
-        let screen = SourceFreshnessScreen(frame: try Data(contentsOf: url))
-        let device = FakeDevice()
-        let pointer = Pointer(device: device, calibrationFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), screen: screen)
-        try await pointer.search("Weather")
-        XCTAssertEqual(screen.gestures, 1) // Spotlight focus still uses normal gesture recovery.
-        XCTAssertEqual(screen.sourceChanges, 2) // Choice and Control release both require freshness.
-        XCTAssertEqual(device.sent, ["key cmd+space", "source next", "source release", "key cmd+a", "key backspace", "type Weather"])
-    }
-
-    func testSourceFreshnessStartsAfterTheHIDReplyRatherThanBeforeDelivery() async throws {
-        let device = SourceTimingDevice()
-        var cutoffs: [Double] = []
-        try await EnglishInput.ensure(device: device, observe: { .english },
-                                      changed: { cutoffs.append($0) }, log: { _ in })
-        XCTAssertEqual(cutoffs.count, 2)
-        XCTAssertEqual(device.repliedAt.count, 2)
-        for (cutoff, reply) in zip(cutoffs, device.repliedAt) { XCTAssertGreaterThanOrEqual(cutoff, reply) }
-    }
-
-    func testSourceObservationWaitsForMenuRenderingWithoutDiscardingItsFirstCapture() async throws {
-        let device = SourceTimingDevice()
-        var checks = 0
-        try await EnglishInput.ensure(device: device, observe: { .english }, changed: { cutoff in
-            checks += 1
-            let replied = try XCTUnwrap(device.repliedAt.last)
-            XCTAssertGreaterThanOrEqual(cutoff, replied)
-            XCTAssertLessThan(cutoff - replied, 0.05) // Keep the actual reply as the capture cutoff.
-            if checks == 1 { XCTAssertGreaterThanOrEqual(now() - replied, 0.28) }
-        }, log: { _ in })
-        XCTAssertEqual(checks, 2)
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-    }
-
-    func testCancellationDuringMenuRenderingReleasesControlBeforeObservation() async throws {
-        let device = FakeDevice()
-        let selection = Task {
-            try await EnglishInput.ensure(device: device, observe: {
-                XCTFail("Cancelled menu render reached OCR")
-                return .english
-            }, changed: { _ in XCTFail("Cancelled menu render checked freshness") }, log: { _ in })
-        }
-        while device.sent.isEmpty { await Task.yield() }
-        selection.cancel()
-        do { try await selection.value; XCTFail("Cancelled menu render succeeded") }
-        catch { XCTAssertTrue(error is CancellationError) }
-        XCTAssertEqual(device.sent, ["source next", "source release"])
-    }
-
-    func testKeyboardFastWaitRejectsAFrameCapturedBeforeTheSourceChange() async throws {
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-        let ready = try await feed.waitForKeyboardSourceFrame(since: now(), timeout: 0.06)
-        XCTAssertFalse(ready)
-        XCTAssertTrue(device.sent.isEmpty) // The fast wait itself must not move/click/type.
-    }
-
-    func testKeyboardFastWaitRejectsAFrameCapturedAtTheHIDReply() async throws {
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-        let ready = try await feed.waitForKeyboardSourceFrame(since: feed.capturedAt, timeout: 0.06)
-        XCTAssertFalse(ready)
-        XCTAssertTrue(device.sent.isEmpty)
-    }
-
-    func testKeyboardSourceAcceptsTheOnlyTransientFrameSoonAfterTheHIDReply() async throws {
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-        let reply = feed.capturedAt - 0.05  // The menu was captured 50 ms after the reply, then stays quiet.
-        try await feed.afterKeyboardSource(since: reply)
-        XCTAssertLessThan(feed.capturedAt, reply + 0.2)
-        XCTAssertTrue(device.sent.isEmpty)
-    }
-
-    func testKeyboardSourceTimeoutDoesNotEnterQuietRecoveryOrMoveThePointer() async throws {
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-        do {
-            try await feed.afterKeyboardSource(since: now())
-            XCTFail("A stale source frame was accepted")
-        } catch { XCTAssertTrue(error is BlindError) }
-        XCTAssertTrue(device.sent.isEmpty)
-    }
-
-    func testKeyboardSourceSnapModeCapturesDirectlyWithoutQuietRecoveryOrPointerMoves() async throws {
-        let savedMode = UserDefaults.standard.object(forKey: FrameMode.key)
-        let savedFallback = FrameMode.fallback
-        defer {
-            UserDefaults.standard.set(savedMode, forKey: FrameMode.key)
-            FrameMode.fallback = savedFallback
-        }
-        FrameMode.current = .snap
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        let reply = now()
-        let capture = Task { @MainActor in
-            while !device.sent.contains("snap") {
-                if Task.isCancelled { return }
-                await Task.yield()
-            }
-            feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-        }
-        defer { capture.cancel() }
-        try await feed.afterKeyboardSource(since: reply)
-        XCTAssertGreaterThan(feed.capturedAt, reply)
-        XCTAssertEqual(device.sent, ["snap"])
-    }
-
-    func testKeyboardFastWaitDoesNotWaitForWholeScreenQuiet() async throws {
-        let device = FakeDevice()
-        let feed = VideoFeed()
-        feed.device = device; feed.mirroring = true
-        let began = now()
-        var updatesFinished = false
-        let updates = Task { @MainActor in
-            for _ in 0..<40 {
-                if Task.isCancelled { return }
-                feed.show(Data([0xff, 0xd8]), width: 440, height: 956)
-                try? await Task.sleep(nanoseconds: 20_000_000)
-            }
-            updatesFinished = true
-        }
-        defer { updates.cancel() }
-        let ready = try await feed.waitForKeyboardSourceFrame(since: began, timeout: 1.2)
-        XCTAssertTrue(ready)
-        XCTAssertGreaterThan(feed.capturedAt, began)
-        XCTAssertFalse(updatesFinished) // Continuous cursor frames no longer force a quiet window.
-        XCTAssertTrue(device.sent.isEmpty)
-    }
-
-    func testKeyboardFastWaitPropagatesCancellation() async {
-        let feed = VideoFeed()
-        let wait = Task { try await feed.waitForKeyboardSourceFrame(since: now()) }
-        wait.cancel()
-        do { _ = try await wait.value; XCTFail("Cancelled source capture was accepted") }
-        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(device.sent, ["key cmd+space", "key eisu", "key cmd+a", "key backspace", "type Weather"])
     }
 
     func testSmallTargetUsesEachScreenAxisInPoints() {
@@ -516,24 +106,15 @@ import CoreGraphics
     }
 }
 
-@MainActor private final class SourceFreshnessScreen: ScreenSource {
-    let live = true
-    let frame: Data?
-    let updated = 0.0, capturedAt = 0.0, aspect = 0.46
-    var gestures = 0, sourceChanges = 0
-    init(frame: Data) { self.frame = frame }
-    func afterAction(since: Double) async throws { gestures += 1 }
-    func afterKeyboardSource(since: Double) async throws { sourceChanges += 1 }
-}
-
-@MainActor private final class SourceTimingDevice: HIDDevice {
+/// Fails one command the way CommandChannel does: an `err` reply or a dropped link.
+@MainActor private final class RejectingDevice: HIDDevice {
     let links = 1, connected = true
-    var repliedAt: [Double] = []
+    let reject: String, reply: String
     var sent: [String] = []
+    init(reject: String, reply: String) { self.reject = reject; self.reply = reply }
     func send(_ command: String) async throws -> String {
         sent.append(command)
-        try await Task.sleep(nanoseconds: 20_000_000)
-        repliedAt.append(now())
+        if command == reject { throw DeviceError(message: reply) }
         return "ok"
     }
     func waitConnected(_ timeout: TimeInterval) async -> Bool { true }

@@ -310,8 +310,8 @@ import Foundation
         guard text.utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else {
             throw DeviceError(message: "目前 HID 文字輸入只支援英文與 ASCII。請勿用注音按鍵猜測中文字。")
         }
-        guard let screen, screen.live else { throw BlindError() }
-        try await EnglishInput.ensure(screen: screen, device: device, log: log)
+        guard screen?.live == true else { throw BlindError() }
+        try await EnglishInput.ensure(device: device, log: log)
         try await device.send("type \(text)")
     }
 
@@ -325,7 +325,7 @@ import Foundation
         let sent = now()
         try await device.send("key cmd+space")
         try await screen.afterAction(since: sent)
-        try await EnglishInput.ensure(screen: screen, device: device, log: log)
+        try await EnglishInput.ensure(device: device, log: log)
         try await device.send("key cmd+a")
         try await device.send("key backspace")
         try await device.send("type \(text)")

@@ -10,8 +10,6 @@ import UIKit
     var aspect: Double { get }
     /// After a gesture that ended at `since`: wait until the screen shows its result (and fetch it, in snap mode).
     func afterAction(since: Double) async throws
-    /// A keyboard-source change needs a fresh selector frame, not a quiet whole screen.
-    func afterKeyboardSource(since: Double) async throws
 }
 
 /// How a run gets its frames: the live stream (`stream on`, the default: a frame in under a second), or one
@@ -29,7 +27,6 @@ enum FrameMode: String {
 
 extension ScreenSource {
     func afterAction(since: Double) async { await settled() }
-    func afterKeyboardSource(since: Double) async throws { try await afterAction(since: since) }
 
     /// Wait until the screen stops changing (AirPlay only sends frames on change). Mid-animation frames are big and
     /// can reach us late over BLE, so a gap is only "quiet" once it also covers the last frame's transport lag.
@@ -84,10 +81,6 @@ extension ScreenSource {
     private var localVerifiedAt = 0.0
     private var decodedBoardMs: UInt32 = 0
     private var localActive = false
-    private var sourceWaitActive = false
-    private var sourceRejectedFrames = 0
-    private var sourceRejectedSummary = "none"
-    private var sourceBatchSummary = "none"
     private var localSourceFailure: LocalVideoResponseError?
     private var streamRevision = 0
     private var stability = FrameStability()
@@ -159,14 +152,7 @@ extension ScreenSource {
 
     private func publish(_ f: H264Decoder.Frame) {
         let capture = clockOffset.map { Double(f.unit.boardMs) / 1000 + $0 } ?? now()
-        guard capture >= capturedAt else {
-            if sourceWaitActive {
-                sourceRejectedFrames += 1
-                sourceRejectedSummary = String(format: "board %u, decoded %u, capture delta %.0f ms",
-                                               f.unit.boardMs, decodedBoardMs, (capture - capturedAt) * 1000)
-            }
-            return // a replay must never move the screen backwards
-        }
+        guard capture >= capturedAt else { return }  // a replay must never move the screen backwards
         frame = f.jpeg
         if localActive, let image = Vision.image(f.jpeg) {
             // Exclude status-bar/Live Activity animation. About 4 KiB per frame.
@@ -296,7 +282,6 @@ extension ScreenSource {
                 var request = URLRequest(url: components.url!)
                 request.allowsCellularAccess = false
                 request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
-                let requestedAt = now()
                 let (data, response) = try await localSession.data(for: request)
                 try Task.checkCancellation()
                 guard revision == streamRevision else { return }
@@ -306,12 +291,6 @@ extension ScreenSource {
                       let latest = response.value(forHTTPHeaderField: "X-Video-Captured-Ms").flatMap(UInt32.init)
                 else { throw DeviceError(message: "Local video is not ready") }
                 let batch = try LocalVideoBatch(data)
-                if sourceWaitActive {
-                    sourceBatchSummary = String(format: "%.0f ms, %d units, first %u, last %u, latest %u, generation %u",
-                                                (now() - requestedAt) * 1000, batch.units.count,
-                                                batch.units.first?.boardMs ?? 0, batch.units.last?.boardMs ?? 0,
-                                                latest, batch.generation)
-                }
                 localSourceFailure = nil; unavailableSince = nil
                 boardClock(ms: up)
                 if localGeneration != batch.generation {
@@ -361,53 +340,6 @@ extension ScreenSource {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
-    }
-
-    /// The source menu can dismiss even while Control is held. Inspect the first
-    /// capture after the HID reply; an extra animation margin or whole-screen
-    /// quiet wait can discard the only visible selector frame. A timeout fails
-    /// closed so EnglishInput releases Control without entering text.
-    func afterKeyboardSource(since: Double) async throws {
-        try Task.checkCancellation()
-        sourceWaitActive = true
-        sourceRejectedFrames = 0; sourceRejectedSummary = "none"; sourceBatchSummary = "none"
-        defer { sourceWaitActive = false }
-        logKeyboardFrame("start", since: since)
-        if !localActive, FrameMode.current == .snap { try await snap() }
-        if try await waitForKeyboardSourceFrame(since: since) {
-            logKeyboardFrame("ready", since: since)
-            return
-        }
-        try Task.checkCancellation()
-        logKeyboardFrame("timeout", since: since)
-        DebugLog.write("keyboard frame: no post-reply capture within the short source-menu window")
-        throw BlindError(reason: "無法確認輸入來源切換後的新畫面，未輸入文字。")
-    }
-
-    private func logKeyboardFrame(_ phase: String, since: Double) {
-        DebugLog.write(String(format: "keyboard frame %@: capture delta %.0f ms, published age %.0f ms, decoded %u, latest %u, verified age %.0f ms, local %@, live %@, broken %@, mirroring %@; %@",
-                              phase, (capturedAt - since) * 1000, (now() - updated) * 1000,
-                              decodedBoardMs, localLatestMs, (now() - localVerifiedAt) * 1000,
-                              String(localActive), String(live), String(broken), String(mirroring), note))
-        if phase != "start" {
-            DebugLog.write("keyboard video batch: " + sourceBatchSummary)
-            if sourceRejectedFrames > 0 {
-                DebugLog.write("keyboard frame drops: \(sourceRejectedFrames); " + sourceRejectedSummary)
-            }
-        }
-    }
-
-    /// A bounded fast path, separately exercised with stale and changing frames.
-    /// Never substitute arrival time or a healthy transport for capture freshness.
-    func waitForKeyboardSourceFrame(since: Double, timeout: Double = 1.2) async throws -> Bool {
-        let deadline = now() + timeout
-        repeat {
-            try Task.checkCancellation()
-            if live, capturedAt > since,
-               !localActive || (localVerifiedAt > now() - 2 && decodedBoardMs == localLatestMs) { return true }
-            if now() >= deadline { return false }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        } while true
     }
 
     /// The model must never see a frame from before the action that ended at `since`. Stream: let the screen

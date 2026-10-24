@@ -96,20 +96,8 @@ uint8_t keyCode(const String &k) {
   return k.length() == 1 ? k[0] : 0;
 }
 
-bool pressCombo(String combo) {
-  combo += '+';
-  for (int i; (i = combo.indexOf('+')) >= 0; combo = combo.substring(i + 1)) {
-    uint8_t c = keyCode(combo.substring(0, i));
-    if (!c) { keyboard.releaseAll(); return false; }
-    keyboard.press(c);
-  }
-  delay(30);
-  keyboard.releaseAll();
-  return true;
-}
-
 // Reuse Arduino's US layout and command key codes for both HID transports.
-bool bluetoothKey(uint8_t key, uint8_t &modifiers, uint8_t &usage) {
+bool hidKey(uint8_t key, uint8_t &modifiers, uint8_t &usage) {
   usage = 0;
   if (key >= 0x88) usage = key - 0x88;
   else if (key >= 0x80) modifiers |= 1 << (key - 0x80);
@@ -120,11 +108,63 @@ bool bluetoothKey(uint8_t key, uint8_t &modifiers, uint8_t &usage) {
   }
   return key != 0;
 }
-bool bluetoothKeys(uint8_t modifiers, const uint8_t keys[6]) {
-  if (!bluetoothSend([&] { return ble_keyboard_send(modifiers, keys); })) return false;
+// iOS Spotlight latches a modifier that goes down in the same report as a key:
+// every later letter then arrives as Shift/Control+letter (Ctrl+I inserts a
+// tab, Ctrl+J submits) until Spotlight restarts. Press and release chords like
+// a physical keyboard: modifiers, keys, keys up, then modifiers up.
+const int CHORD_STAGE_MS = 15;
+template <typename Send> bool stagedKeys(uint8_t modifiers, const uint8_t keys[6], Send send) {
+  const uint8_t none[6]{};
+  if (modifiers) {
+    if (!send(modifiers, none)) return false;
+    delay(CHORD_STAGE_MS);
+  }
+  if (!send(modifiers, keys)) return false;
   delay(30);
-  const uint8_t released[6]{};
-  return bluetoothSend([&] { return ble_keyboard_send(0, released); });
+  if (modifiers) {
+    if (!send(modifiers, none)) return false;
+    delay(CHORD_STAGE_MS);
+  }
+  return send(0, none);
+}
+bool bluetoothKeys(uint8_t modifiers, const uint8_t keys[6]) {
+  return stagedKeys(modifiers, keys, [](uint8_t m, const uint8_t *k) {
+    return bluetoothSend([&] { return ble_keyboard_send(m, k); });
+  });
+}
+bool usbKeys(uint8_t modifiers, const uint8_t keys[6]) {
+  return stagedKeys(modifiers, keys, [](uint8_t m, const uint8_t *k) {
+    KeyReport report{m, 0, {}};
+    memcpy(report.keys, k, 6);
+    keyboard.sendReport(&report);
+    return true;
+  });
+}
+String typeText(const String &text, bool (*sendKeys)(uint8_t, const uint8_t *)) {
+  // Validate first so unsupported UTF-8 never leaves a partially typed command.
+  for (size_t i = 0; i < text.length(); ++i)
+    if (uint8_t(text[i]) >= 128 || !KeyboardLayout_en_US[uint8_t(text[i])]) return "err type supports US ASCII only";
+  for (size_t i = 0; i < text.length(); ++i) {
+    uint8_t modifiers = 0, keys[6]{};
+    hidKey(text[i], modifiers, keys[0]);
+    if (!sendKeys(modifiers, keys)) return "err keyboard send/release failed";
+  }
+  return "ok";
+}
+String pressKeys(String combo, bool (*sendKeys)(uint8_t, const uint8_t *)) {
+  uint8_t modifiers = 0, keys[6]{}, count = 0;
+  combo += '+';
+  for (int i; (i = combo.indexOf('+')) >= 0; combo = combo.substring(i + 1)) {
+    String name = combo.substring(0, i);
+    uint8_t usage;
+    // JIS 英数/かな (HID LANG2/LANG1) select the Latin or Japanese input source
+    // directly. Their usages are beyond Arduino's 8-bit key codes.
+    if (name == "eisu" || name == "kana") usage = name == "eisu" ? 0x91 : 0x90;
+    else if (!hidKey(keyCode(name), modifiers, usage)) return "err unknown key";
+    if (usage && count == 6) return "err unknown key";
+    if (usage) keys[count++] = usage;
+  }
+  return sendKeys(modifiers, keys) ? "ok" : "err keyboard send/release failed";
 }
 
 // A locked or sleeping phone suspends USB; sending HID reports then can stall. Ask it to wake up instead,
@@ -169,7 +209,13 @@ String run(const String &line) {
         if (!bluetoothSend([&] { return ble_keyboard_send(0, empty); })) return "err Bluetooth source release failed";
         sourceKeyHeld = false; return "ok";
       }
-      sourceKeyHeld = true;
+      // Control first, in its own report: see stagedKeys. It is already down
+      // while the menu stays open, so only the first press adds this report.
+      if (!sourceKeyHeld) {
+        sourceKeyHeld = true;
+        if (!bluetoothSend([&] { return ble_keyboard_send(1, empty); })) return "err Bluetooth source switch failed";
+        delay(CHORD_STAGE_MS);
+      }
       if (!bluetoothSend([&] { return ble_keyboard_send(1, space); })) return "err Bluetooth source switch failed";
       delay(40);
       return bluetoothSend([&] { return ble_keyboard_send(1, empty); }) ? "ok" : "err Bluetooth source hold failed";
@@ -233,27 +279,8 @@ String run(const String &line) {
       delay(40);
       return bluetoothSend([] { return ble_consumer_send(0); }) ? "ok" : "err Bluetooth Home release failed";
     }
-    if (cmd == "type") {
-      // Validate first so unsupported UTF-8 never leaves a partially typed command.
-      for (size_t i = 0; i < arg.length(); ++i)
-        if (uint8_t(arg[i]) >= 128 || !KeyboardLayout_en_US[uint8_t(arg[i])]) return "err type supports US ASCII only";
-      for (size_t i = 0; i < arg.length(); ++i) {
-        uint8_t modifiers = 0, keys[6]{};
-        bluetoothKey(arg[i], modifiers, keys[0]);
-        if (!bluetoothKeys(modifiers, keys)) return "err Bluetooth keyboard send/release failed";
-      }
-      return "ok";
-    }
-    if (cmd == "key") {
-      uint8_t modifiers = 0, keys[6]{}, count = 0;
-      arg += '+';
-      for (int i; (i = arg.indexOf('+')) >= 0; arg = arg.substring(i + 1)) {
-        uint8_t usage;
-        if (!bluetoothKey(keyCode(arg.substring(0, i)), modifiers, usage) || (usage && count == 6)) return "err unknown key";
-        if (usage) keys[count++] = usage;
-      }
-      return bluetoothKeys(modifiers, keys) ? "ok" : "err Bluetooth keyboard send/release failed";
-    }
+    if (cmd == "type") return typeText(arg, bluetoothKeys);
+    if (cmd == "key") return pressKeys(arg, bluetoothKeys);
     return "err unknown command";
   }
   if (!usbReady()) return "err phone usb asleep (unlock the phone)";
@@ -271,8 +298,8 @@ String run(const String &line) {
     mouse.press(mask); delay(60); mouse.release(mask); return "ok";
   }
   if (cmd == "scroll") { mouse.move(0, 0, a, b); return "ok"; }
-  if (cmd == "type") { keyboard.print(arg); return "ok"; }
-  if (cmd == "key") return pressCombo(arg) ? "ok" : "err unknown key";
+  if (cmd == "type") return typeText(arg, usbKeys);
+  if (cmd == "key") return pressKeys(arg, usbKeys);
   if (cmd == "homescreen") { consumer.press(AC_HOME); delay(40); consumer.release(); return "ok"; }
   return "err unknown command";
 }

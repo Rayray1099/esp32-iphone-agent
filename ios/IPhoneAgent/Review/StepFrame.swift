@@ -42,7 +42,7 @@ struct StepFrame: View {
     @ViewBuilder private var bubble: some View {
         let a = step.action
         switch step.name {
-        case "type": Bubble(symbol: "keyboard", text: a["text"]?.str ?? "")
+        case "type", "search": Bubble(symbol: "keyboard", text: a["text"]?.str ?? "")
         case "key": Bubble(symbol: "command", text: a["combo"]?.str ?? "")
         case "home": Bubble(symbol: "house.fill", text: String(localized: "Home"))
         case "back": Bubble(symbol: "chevron.backward", text: String(localized: "Back"))

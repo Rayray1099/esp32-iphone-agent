@@ -45,9 +45,31 @@ extension AppModel {
         case "status": say(statusSummary)
         case "log": relayHistory(Int(rest) ?? 50)
         case "accuracy": calibrator.testSmallTargets(precise: rest == "precise")
+        case "search" where !rest.isEmpty: testEnglishSearch(rest)
         case "mode":
             if let mode = FrameMode(rawValue: rest) { setFrameMode(mode) } else { say("frame mode: \(FrameMode.current.rawValue)") }
         default: say("debug: unknown app command \"\(line.prefix(40))\"")
+        }
+    }
+
+    /// UART development harness uses the same search/type path as the actor.
+    private func testEnglishSearch(_ query: String) {
+        guard !agent.running, !startingAgent, !calibrator.busy else { return say("input test: busy") }
+        Task {
+            let began = now()
+            var claimed = false
+            do {
+                guard await waitReady(mirroring: true) else { throw BlindError() }
+                _ = try await board.commands.send("v1 POST input/claim {}")
+                claimed = true
+                try await feed.stream(true)
+                _ = try await feed.currentFrame()
+                guard await leaveApp() else { throw DeviceError(message: "Input test cannot leave app") }
+                try await pointer.search(query)
+                try await feed.afterAction(since: now())
+                say(String(format: "input test: search sent and fresh screen verified in %.2f s", now() - began))
+            } catch { say("input test failed: " + error.localizedDescription) }
+            if claimed { _ = try? await board.commands.send("v1 POST input/release {}") }
         }
     }
 

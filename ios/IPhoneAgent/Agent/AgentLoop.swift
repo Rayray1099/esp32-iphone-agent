@@ -13,6 +13,7 @@ struct BlindError: LocalizedError {
     func swipe(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, hold: Bool) async throws
     func drag(_ points: [CGPoint], hold: Bool) async throws
     func type(_ text: String) async throws
+    func search(_ text: String) async throws
     func key(_ combo: String) async throws
     func goHome() async throws
     func goBack() async throws
@@ -281,7 +282,8 @@ extension Pointer: Gestures {}
             record(planned.shot, act)
             if name == "done" || name == "fail" { return true }
             let following = i < acts.count - 1 ? acts[i + 1].act["action"]?.str : nil
-            if name == "tap" && (following == "type" || following == "key") {  // a missed tap never opened the field
+            let focusesInput = name == "tap" || (name == "key" && act["combo"]?.str == "cmd+space")
+            if focusesInput && (following == "type" || following == "key") {
                 timing.frameMs += try await settle()
                 if !Vision.changed(seen, screen?.frame, ignore: spots) {
                     steps[steps.count - 1]["changed"] = .bool(false)
@@ -364,6 +366,7 @@ extension Pointer: Gestures {}
         case "path": try await phone.drag(points(a).map { CGPoint(x: $0.x / 1000, y: $0.y / 1000) }, hold: true)
         case "circle": try await phone.drag(circle(p("x"), p("y"), p("r"), aspect: screen?.aspect ?? 9 / 19.5), hold: true)
         case "type": try await phone.type(a["text"]?.str ?? "")
+        case "search": try await phone.search(a["text"]?.str ?? "")
         case "key": try await phone.key(a["combo"]?.str ?? "")
         case "home": try await phone.goHome()
         case "back": try await phone.goBack()

@@ -232,6 +232,7 @@ import XCTest
     func swipe(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, hold: Bool) async throws { calls.append("swipe") }
     func drag(_ points: [CGPoint], hold: Bool) async throws { calls.append("drag") }
     func type(_ text: String) async throws { calls.append("type") }
+    func search(_ text: String) async throws { calls.append("search") }
     func key(_ combo: String) async throws { calls.append("key") }
     func goHome() async throws { calls.append("home") }
     func goBack() async throws { calls.append("back") }

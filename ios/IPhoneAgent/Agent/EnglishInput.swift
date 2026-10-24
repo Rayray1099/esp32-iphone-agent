@@ -1,50 +1,97 @@
 import Foundation
 import Vision
 
-/// On-device OCR of the keyboard only. No text, screenshot, or extra request is sent to a model.
+/// On-device keyboard OCR. Unknown input sources must not silently accept ASCII keystrokes.
 enum EnglishInput {
-    enum Layout: Equatable { case english, zhuyin, unknown }
+    enum Layout: Equatable { case english, zhuyin, other, unknown }
+    struct Word { let text: String; let box: CGRect } // Vision coordinates, origin bottom left
 
     static func layout(_ words: [String]) -> Layout {
         let text = words.joined(separator: " ").lowercased()
-        if text.contains("english") || text.contains("英文") || text.contains("qwerty") { return .english }
         let symbols = Set(text.unicodeScalars.filter { (0x3105...0x312f).contains($0.value) })
         if symbols.count >= 3 || text.contains("注音") || text.contains("zhuyin") { return .zhuyin }
-        let letters = Set(words.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
-        if letters.intersection(["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]).count >= 6 { return .english }
+        if text.contains("手寫") || text.contains("handwriting") || text.contains("日本語") || text.contains("表情符號") { return .other }
+        if text.contains("english") || text.contains("英文") || text.contains("qwerty") { return .english }
+        // Vision often groups a row into one observation, e.g. "q w e r t y".
+        let rows = words.map { $0.lowercased().filter { !$0.isWhitespace } }
+        let keys = Set(rows.filter { $0.count <= 12 }.joined())
+        if keys.intersection(Set("qwertyuiop")).count >= 6 { return .english }
+        // The space-bar label survives when individual Zhuyin glyphs become kana.
+        if words.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "注" }) { return .zhuyin }
         return .unknown
+    }
+
+    static func classify(_ words: [Word], image: CGImage) -> Layout {
+        // Ctrl-Space lists every language. "English" in that list does not mean
+        // it is selected; compare backgrounds beside the option labels.
+        let labels = ["english", "注音", "手寫", "日本語", "表情符號", "emoji"]
+        let options = words.filter { word in
+            word.box.midX > 0.25 && word.box.midX < 0.75 && word.box.midY > 0.25 && word.box.midY < 0.8 &&
+            labels.contains(where: { word.text.lowercased().contains($0) })
+        }
+        if options.count >= 2, let left = options.map({ $0.box.minX }).min() {
+            let gray = Vision.gray(image, image.width, image.height)
+            let scores = options.map { word -> (Word, Double) in
+                let x = max(0, Int((left - 0.025) * Double(gray.w)))
+                let y = max(0, Int((1 - word.box.midY - 0.008) * Double(gray.h)))
+                let width = max(2, Int(Double(gray.w) * 0.015))
+                let height = max(2, Int(Double(gray.h) * 0.016))
+                var total = 0, count = 0
+                for row in y..<min(gray.h, y + height) {
+                    for col in x..<min(gray.w, x + width) { total += Int(gray.px[row * gray.w + col]); count += 1 }
+                }
+                return (word, Double(total) / Double(max(count, 1)))
+            }.sorted { $0.1 > $1.1 }
+            guard scores[0].1 - scores[1].1 >= 8 else { return .unknown }
+            return layout([scores[0].0.text])
+        }
+        return layout(words.filter { $0.box.midY < 0.36 }.map { $0.text })
     }
 
     static func read(_ jpeg: Data) async -> Layout {
         await Task.detached(priority: .userInitiated) {
+            guard let image = Vision.image(jpeg) else { return Layout.unknown }
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
             request.recognitionLanguages = ["en-US", "zh-Hant"]
             request.usesLanguageCorrection = false
-            request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 0.42)
+            request.minimumTextHeight = 0.008
+            request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 0.8)
             do {
-                try VNImageRequestHandler(data: jpeg).perform([request])
-                return layout((request.results ?? []).compactMap { $0.topCandidates(1).first?.string })
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                return classify((request.results ?? []).compactMap { r in
+                    r.topCandidates(1).first.map { Word(text: $0.string, box: r.boundingBox) }
+                }, image: image)
             } catch { return .unknown }
         }.value
     }
 
-    @MainActor static func ensure(screen: ScreenSource, device: HIDDevice, log: (String) -> Void) async throws {
-        guard let image = screen.frame else { throw BlindError() }
-        let initial = await read(image)
-        // A hidden hardware keyboard has no visible language indicator. Preserve it; never blindly toggle.
-        guard initial == .zhuyin else { return }
-        log("keyboard: 注音 detected; selecting English before ASCII input")
-        for _ in 0..<3 {
+    /// Injectable observations exercise the actual recovery path in regression tests.
+    @MainActor static func ensure(device: HIDDevice, observe: () async throws -> Layout,
+                                  changed: (Double) async throws -> Void, log: (String) -> Void) async throws {
+        if try await observe() == .english { return }
+        log("keyboard: selecting a confirmed English input source")
+        // A bounded cycle includes handwriting/emoji. Never type probe characters
+        // into a user's field, and never retry user text after an uncertain reply.
+        for _ in 0..<6 {
             try Task.checkCancellation()
+            let sent = now()
             try await device.send("key ctrl+space")
-            guard let frame = await screen.fresh(since: now(), timeout: 3) else { throw BlindError() }
-            await screen.settled(quiet: 0.15, least: 0.15, most: 0.8)
-            if await read(screen.frame ?? frame) == .english {
+            try await changed(sent)
+            if try await observe() == .english {
                 log("keyboard: English confirmed")
                 return
             }
         }
-        throw DeviceError(message: "未能確認英文鍵盤，未輸入文字，避免產生注音或重複內容。")
+        throw DeviceError(message: "未能確認英文輸入來源，未輸入文字。請選擇 English (US) 後再試。")
+    }
+
+    @MainActor static func ensure(screen: ScreenSource, device: HIDDevice, log: (String) -> Void) async throws {
+        try await ensure(device: device, observe: {
+            guard screen.live, let frame = screen.frame else { throw BlindError() }
+            return await read(frame)
+        }, changed: { sent in
+            try await screen.afterAction(since: sent)
+        }, log: log)
     }
 }

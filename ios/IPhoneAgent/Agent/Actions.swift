@@ -13,7 +13,7 @@ enum Actions {
     /// action name -> argument names; numeric arguments are 0-1000 screen coordinates
     static let actions: [String: [String]] = [
         "tap": ["x", "y"], "swipe": ["x1", "y1", "x2", "y2"], "circle": ["x", "y", "r"], "path": ["points"],
-        "type": ["text"], "key": ["combo"], "done": ["answer"], "fail": ["reason"],
+        "type": ["text"], "search": ["text"], "key": ["combo"], "done": ["answer"], "fail": ["reason"],
         "home": [], "back": [], "wait": [], "replan": [],
     ]
     static let textArgs: Set<String> = ["text", "combo", "answer", "reason"]

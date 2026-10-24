@@ -80,7 +80,7 @@ extension AppModel {
         case .retrying: setBoardProgress("retrying", action: "Model_retry")
         case .acting(let act):
             let labels = ["tap": "Tap", "swipe": "Swipe", "path": "Drag", "circle": "Draw",
-                          "type": "Type_text", "key": "Keyboard", "home": "Home", "back": "Back", "wait": "Wait"]
+                          "type": "Type_text", "search": "Search", "key": "Keyboard", "home": "Home", "back": "Back", "wait": "Wait"]
             let newRound = boardProgress.summaryRound != agent.round
             boardProgress.step = agent.round
             boardProgress.phase = "acting"
@@ -89,7 +89,7 @@ extension AppModel {
                 boardProgress.summary = BoardAgentProgress.cleanSummary(summary)
             } else if newRound || boardProgress.summary.isEmpty {
                 let fallback = ["tap": "點擊畫面上的目標", "swipe": "滑動畫面尋找目標", "type": "在欄位輸入文字",
-                                "key": "使用鍵盤快捷鍵", "home": "返回手機主畫面", "back": "返回上一個畫面", "wait": "等待畫面更新"]
+                                "search": "開啟搜尋並輸入查詢", "key": "使用鍵盤快捷鍵", "home": "返回手機主畫面", "back": "返回上一個畫面", "wait": "等待畫面更新"]
                 boardProgress.summary = fallback[act["action"]?.str ?? ""] ?? "執行下一步操作"
             }
             boardProgress.summaryRound = agent.round

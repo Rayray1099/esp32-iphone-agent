@@ -306,9 +306,24 @@ import Foundation
         guard text.utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else {
             throw DeviceError(message: "目前 HID 文字輸入只支援英文與 ASCII。請勿用注音按鍵猜測中文字。")
         }
-        if let screen, screen.live {
-            try await EnglishInput.ensure(screen: screen, device: device, log: log)
+        guard let screen, screen.live else { throw BlindError() }
+        try await EnglishInput.ensure(screen: screen, device: device, log: log)
+        try await device.send("type \(text)")
+    }
+
+    /// One locally verified keyboard operation, with no model calls or mouse aiming.
+    /// It only enters the query; the actor must inspect results before opening any app.
+    func search(_ text: String) async throws {
+        guard !text.isEmpty, text.utf8.allSatisfy({ $0 >= 32 && $0 < 127 }) else {
+            throw DeviceError(message: "Spotlight 搜尋需要非空白英文或 ASCII 查詢。")
         }
+        guard let screen, screen.live else { throw BlindError() }
+        let sent = now()
+        try await device.send("key cmd+space")
+        try await screen.afterAction(since: sent)
+        try await EnglishInput.ensure(screen: screen, device: device, log: log)
+        try await device.send("key cmd+a")
+        try await device.send("key backspace")
         try await device.send("type \(text)")
     }
     func key(_ combo: String) async throws { try await device.send("key \(combo)") }

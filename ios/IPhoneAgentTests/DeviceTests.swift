@@ -136,15 +136,55 @@ import XCTest
         XCTAssertFalse(bluetooth.merged(with: compact).inputReady)
     }
 
-    func testPointerRehomesEveryTenGestures() async throws {
+    func testDistinctPointerGesturesUseTheCalibratedPathFromHome() async throws {
         let device = FakeDevice()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
         let pointer = Pointer(device: device, calibrationFile: file)
         pointer.finishCalibration(x: 0.5, y: 0.25)  // span 400 x 800
+        try await pointer.point(0.5, 0.5)
+        try await pointer.point(0.25, 0.75)
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400",
+                                     "home", "move 100 600", "home", "move 200 400"])
+    }
+
+    func testRepeatedPointerTargetReusesItsKnownPosition() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
         for _ in 0..<11 { try await pointer.point(0.5, 0.5) }
-        XCTAssertEqual(device.sent.filter { $0 == "home" }.count, 2)
-        XCTAssertEqual(device.sent[0], "release")  // a new link: let go first
-        XCTAssertEqual(device.sent[2], "move 200 400")
+        try await pointer.point(0.5001, 0.5001)  // same rounded mouse coordinates
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400"])
+    }
+
+    func testPointerDragStaysContinuousAndReanchorsItsEndpointForTheNextGesture() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.drag([CGPoint(x: 0.25, y: 0.25), CGPoint(x: 0.5, y: 0.5),
+                                CGPoint(x: 0.75, y: 0.75)], hold: false)
+        try await pointer.point(0.75, 0.75)
+        try await pointer.point(0.75, 0.75)
+        XCTAssertEqual(device.sent, ["release", "home", "move 100 200", "press",
+                                     "move 100 200", "move 100 200", "release", "home", "move 300 600"])
+    }
+
+    func testPointerReconnectReleasesAndHomesEvenAtTheSameTarget() async throws {
+        let device = FakeDevice()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let pointer = Pointer(device: device, calibrationFile: file)
+        pointer.finishCalibration(x: 0.5, y: 0.25)
+        try await pointer.point(0.5, 0.5)
+        device.links += 1
+        try await pointer.point(0.5, 0.5)
+        XCTAssertEqual(device.sent, ["release", "home", "move 200 400",
+                                     "release", "home", "move 200 400"])
     }
 
     func testHomeUsesMappedButtonWithoutClickingAnAppControl() async throws {

@@ -2,13 +2,13 @@ import Foundation
 
 /// Touch-like gestures on the phone, built from relative mouse moves. Port of phone.py.
 ///
-/// The pointer is relative, so the app tracks where it is (in mouse units) and moves from there; every few
-/// gestures it slams it into the top-left corner (`home`) again to cancel drift. Coordinates are fractions of
-/// the screen (0..1, origin top-left), so they work for any frame size.
+/// Touch calibration measures moves from the top-left corner (`home`), so each new gesture uses that
+/// same path to avoid accumulated relative-motion drift. A repeated target can reuse its known position;
+/// drags stay continuous. Coordinates are fractions of the screen (0..1, origin top-left).
 @MainActor final class Pointer: ObservableObject {
     static let calibrationMove = 200        // mouse units moved diagonally for a manual (one point) calibration
     static let calibrationStops = [150, 350]  // automatic calibration finds the pointer at these distances
-    static let rehomeEvery = 10             // gestures between re-homing
+    static let rehomeEvery = 1              // distinct gestures between re-homing
     static let hold = 0.25                  // s to rest before lifting, so iOS adds no momentum
     static let tapGap = 0.15                // s to stay still after a click, so iOS sees a finished tap
     static let nudge = 12                   // mouse units the pointer is wiggled by to find it on screen
@@ -251,6 +251,9 @@ import Foundation
             try await device.send("release")
             (pos, link) = (nil, device.links)
         }
+        // Repeated taps need no motion. A drag endpoint is not a from-home landing (moves > 1),
+        // so even the same target must be re-anchored after a stroke.
+        if rehome, moves <= 1, let p = pos, p.0 == tx, p.1 == ty { return }
         if pos == nil || (rehome && moves >= Self.rehomeEvery) {
             try await device.send("home")
             (pos, moves) = ((0, 0), 0)

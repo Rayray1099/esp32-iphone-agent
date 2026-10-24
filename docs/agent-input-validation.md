@@ -8,14 +8,12 @@ the actor inspects the resulting screen before selecting an app. This removes
 model calls between opening search and entering its query. Command logs redact
 the query and typed content.
 
-Background keyboard OCR uses CPU Vision. Hardware-source checks crop the
-centered selector to 64% of each frame dimension and scale its width to at most
-440 pixels. Crop boxes map back to full-frame coordinates before pixel sampling.
-A selected source requires both horizontal pill edges and vertical contrast;
-bright translucent unselected rows cannot prove selection. QWERTY software
-key caps alone cannot confirm the hardware layout. Source cycling is bounded,
-never types probe text in user fields, releases Control on failure, and waits
-for a fresh frame after release before typing.
+Since build 27 the app selects English with one `key eisu` (the JIS 英数 key,
+HID LANG2) before every `type`, and refuses text if the board rejects it. The
+firmware sends every chord in stages, like a physical keyboard: modifiers,
+modifiers plus key, modifiers, then nothing. The Control+Space source cycle,
+its selector OCR and the source-specific capture path (builds 22-26, below)
+were removed; see "Build 27" for why.
 
 The BLE keyboard descriptor declares Input2 and Output2 (LEDs). Output2 was
 missing from GATT; it is now initialized after the existing input reports to
@@ -222,8 +220,70 @@ does not count as a reliable new-query typing pass. It motivated build 24's
 transient-menu fix. Board framebuffer captures during the real run showed
 step 1, Search, Chinese action text, and the final Completed state.
 
+## Build 27: staged chords and the 英数 key
+
+Root cause. On this iOS 27 iPhone, Spotlight (`com.apple.Spotlight`) latches a
+modifier that goes down in the same HID report as a key. Later plain letters
+then arrive as Control or Shift chords: Control+I inserted a tab, Control+J
+submitted the query and Shift turned `1` into `!`, while digits survived. The
+latch persisted until Spotlight restarted or the keyboard reconnected; a lone
+modifier tap neither caused nor cleared it. WebKit fields were not affected,
+so the Safari fixture used for builds 21-26 could not show it. The source
+selector's unreliable highlight was a second, independent problem.
+
+Firmware now stages every BLE and USB chord with 15 ms between stages, and
+`source next` presses Control alone before Space. With correct reports a held
+Control plus repeated Space inserts U+3000 full-width spaces in CJK sources
+instead of cycling, and a single Control+Space only toggles the two most recent
+sources. Selector OCR therefore cannot work reliably. The 英数 key selects the
+Latin source directly. Physically verified starting from 繁體注音 (also with
+a pending composition), 繁體手寫 and 日本語手書き; no settle wait is needed
+before typing. Old firmware answers `err ... unknown key`, and the app then
+refuses to type and asks for a firmware update.
+
+The oracle is the actual Spotlight field value, read through iCTRL
+accessibility (`SpotlightSearchField`), plus a screenshot; command
+acknowledgements and app logs were not counted. Production `app search` with
+build 27 and the final firmware entered exactly:
+
+| Query | Start source | Result |
+|---|---|---|
+| `Re27XyZ731` | 繁體注音 (probe showed `ㄆㄅ`) | exact; search phase 2.85 s, harness total about 6.2 s (build 26: 16.00 s) |
+| `Qa27_AaZz-019!` | English | exact |
+| `Zh27Mix_AbCd123` | handwriting (Latin pass-through) | exact |
+| `Zy27Hard_QwErTy-42` | 繁體注音 (probe showed `ㄆ ㄅ`) | exact; search phase 2.70 s |
+
+The final firmware is a 2,867,136-byte image with SHA256
+`90f43c66d84a905cbd587d390c1f0bccb110a9314572f944e354f9bf788d0428`, flashed
+only to app slot 0 at 0x20000 with hash verification (otadata selects ota_0).
+Reflashing drops PULSE's BLE link and AirPlay mirroring; both were reconnected
+from the phone. Five profiles remain.
+
+Build 27 passed 126/126 simulator unit tests and device packaging (UI tests
+skipped): https://github.com/Rayray1099/esp32-iphone-agent/actions/runs/40081720177.
+The unsigned IPA has 5,245,933 bytes, SHA256
+`bac48a5a15da0142b5354495da93644ccc8a79bf54108749019c08f1a036e51f`; the phone
+copy was read back and matched. It was signed with the existing identity and
+installed over the existing app; the update page shows 1.1 (27), and the
+543 x 1185 calibration (±0.8%), board and model settings were retained.
+
+Safe AI task "open Clock" (search, tap the result, change nothing). The first
+build-27 run reached the Home Screen icon, but taps did not launch Clock in
+that window; it was stopped. The second typed exactly `Clock` but its first
+tap opened Block Blast! from the result below. Between those runs, the
+pointer had been moved directly over UART for diagnosis while the app still
+held its post-stop home position. Its first tap was a relative move from that
+stale origin. The third run, with no out-of-band movement, completed in three
+steps and about 37 s, versus four steps and about 49 s for build 24. iCTRL
+confirmed `com.apple.mobiletimer` in the foreground on the Alarms tab. The log
+shows one click, on the Spotlight top hit; no alarm or timer was touched.
+
+Limits: the Spotlight latch and 英数 behavior were observed on one iPhone and
+iOS 27 with the installed sources above. HID text is still ASCII only. A
+pointer moved outside the app between runs, for example by UART tests, makes
+the next tap's first relative move wrong until the app re-homes.
+
 Private screenshots, raw phone logs, synthetic events and recovery binaries
 stay in ignored output folders. Cellular data and PULSE's per-app cellular
 permission remain disabled. LCSign transfer services are disabled outside
-installation. Final build-24 device results and phone lock will be recorded
-after remaining device tests.
+installation.
